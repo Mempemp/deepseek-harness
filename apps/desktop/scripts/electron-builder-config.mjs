@@ -100,6 +100,9 @@ export function createElectronBuilderConfig(
   const productVersion = JSON.parse(readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8')).version
   const buildVersion = resolveDesktopBuildVersion(env, productVersion)
   const packaged = resolveDesktopBuildCommit(env)
+  // The packed 1C catalog sits beside this configuration, not under the target build tree, so the
+  // stock application (which ships no catalog) and our bundle share one packaging path.
+  const catalogSource = fileURLToPath(new URL('../installer-catalog', import.meta.url))
   return {
     appId,
     protocols: [{ name: 'DeepSeek Harness', schemes: ['dsh'] }],
@@ -146,11 +149,8 @@ export function createElectronBuilderConfig(
     asarUnpack: unpack,
     extraResources: [
       { from: buildPaths.runtime, to: 'runtime' },
-      // The packed 1C catalog: installed into the profile by the shell on first run. A build without
-      // the catalog (the stock application) ships no directory and seeds nothing.
-      ...(existsSync(join(buildPaths.root, 'installer-catalog'))
-        ? [{ from: join(buildPaths.root, 'installer-catalog'), to: 'installer-catalog' }]
-        : []),
+      // The packed 1C catalog: installed into the profile by the shell on first run.
+      ...(existsSync(catalogSource) ? [{ from: catalogSource, to: 'installer-catalog' }] : []),
       { from: fileURLToPath(new URL('../resources/icon-windows.png', import.meta.url)), to: 'icon.png' },
       // Windows tray bitmaps; macOS keeps the Dock and ships no menu bar icon.
       ...(packagesWindows ? [{ from: fileURLToPath(new URL('../resources/tray-windows.ico', import.meta.url)), to: 'tray.ico' }] : []),
