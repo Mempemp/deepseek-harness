@@ -9,14 +9,21 @@
 
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
-import { delimiter, join } from 'node:path'
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { basename, delimiter, join } from 'node:path'
 
 /** Directory beside the packaged application resources holding the packed catalog. */
 export const CATALOG_RESOURCES_DIR = 'installer-catalog'
 
 /** Profile-relative marker recording which catalog revision the profile carries. */
 export const CATALOG_MARKER_NAME = '.1c-catalog-applied'
+
+/**
+ * Profile-relative directory holding the catalog revision the profile installed from.
+ * The packed catalog also lives beside the application, but that directory changes with every
+ * installation and update, while the profile's own `file:` dependencies must keep resolving.
+ */
+export const CATALOG_STAGE_DIR = '.1c-catalog'
 
 /** Home-relative directory receiving a `kind: payload` content tree. */
 export const PAYLOAD_HOME_DIR = '1c-rules'
@@ -175,11 +182,33 @@ function selectBundles(profileDir: string, packages: readonly string[], note: (m
   writeAtomic(manifestPath, `${JSON.stringify({ ...manifest, dsh: { ...dsh, profile: { ...profile, bundles: selected } } }, undefined, 2)}\n`)
 }
 
+/**
+ * Copy this catalog revision into the profile and drop the revisions before it.
+ * The packed catalog lives beside the application, whose directory changes with every installation
+ * and update; the profile's own `file:` dependencies must keep resolving after such a change.
+ * @param options - Seeding attempt whose profile receives the copy.
+ * @param fingerprint - Digest identifying the revision being staged.
+ * @returns Directory holding the staged revision.
+ */
+function stageCatalog(options: CatalogSeedOptions, fingerprint: string): string {
+  const root = join(options.profileDir, CATALOG_STAGE_DIR)
+  const stagedDir = join(root, fingerprint.slice(0, 16))
+  if (!existsSync(stagedDir)) {
+    mkdirSync(root, { recursive: true })
+    cpSync(options.catalogDir, stagedDir, { recursive: true })
+  }
+  for (const entry of readdirSync(root)) {
+    if (entry !== basename(stagedDir)) rmSync(join(root, entry), { recursive: true, force: true })
+  }
+  options.note(`[catalog] staged ${basename(stagedDir)} in the profile`)
+  return stagedDir
+}
+
 /** Copy one content tree into the Harness home, replacing a tree this catalog owns. */
-function installContentTree(options: CatalogSeedOptions, item: CatalogItem, destination: string, label: string): void {
+function installContentTree(stagedDir: string, options: CatalogSeedOptions, item: CatalogItem, destination: string, label: string): void {
   const relative = text(item.path)
   if (relative === undefined) throw new Error(`catalog ${label} ${String(item.id)} is missing a path`)
-  const source = join(options.catalogDir, relative)
+  const source = join(stagedDir, relative)
   if (!existsSync(source)) throw new Error(`catalog ${label} tree is missing: ${source}`)
   rmSync(destination, { recursive: true, force: true })
   mkdirSync(join(destination, '..'), { recursive: true })
@@ -241,11 +270,12 @@ export async function seedShippedCatalog(options: CatalogSeedOptions): Promise<C
     const fingerprint = catalogFingerprint(options.catalogDir)
     if (markedFingerprint(options.profileDir) === fingerprint) return { outcome: 'skipped' }
     const items = catalogItems(manifest)
+    const stagedDir = stageCatalog(options, fingerprint)
     const tarballs = items
       .filter(item => item.kind === 'plugin')
       .flatMap((item) => {
         const file = text(item.file)
-        return file === undefined ? [] : [join(options.catalogDir, file)]
+        return file === undefined ? [] : [join(stagedDir, file)]
       })
     const missing = tarballs.filter(path => !existsSync(path))
     if (missing.length > 0) throw new Error(`catalog tarball is missing: ${missing.join(', ')}`)
@@ -257,8 +287,8 @@ export async function seedShippedCatalog(options: CatalogSeedOptions): Promise<C
         .filter(name => name !== ''), options.note)
     }
     for (const item of items) {
-      if (item.kind === 'payload') installContentTree(options, item, join(options.homeDir, PAYLOAD_HOME_DIR), 'payload')
-      else if (item.kind === 'skill') installContentTree(options, item, join(options.homeDir, 'skills', String(item.id)), 'skill')
+      if (item.kind === 'payload') installContentTree(stagedDir, options, item, join(options.homeDir, PAYLOAD_HOME_DIR), 'payload')
+      else if (item.kind === 'skill') installContentTree(stagedDir, options, item, join(options.homeDir, 'skills', String(item.id)), 'skill')
       else if (item.kind === 'mcp') installMcpRow(options, item)
     }
     writeAtomic(join(options.profileDir, CATALOG_MARKER_NAME), `${JSON.stringify({

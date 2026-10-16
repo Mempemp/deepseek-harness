@@ -1,6 +1,6 @@
 /** First-run catalog seeding: what it decides, what it writes, and what it leaves alone. */
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -101,6 +101,22 @@ describe('catalog seeding', () => {
     expect(store.servers.map(server => server.name).sort()).toEqual(['v8std'])
     expect(store.servers[0]?.url).toBe('https://ai.v8std.ru/mcp')
     expect(existsSync(join(seeded.options.homeDir, MCP_MANAGER_DIR, MCP_MANAGER_STORE))).toBe(false)
+  })
+
+  it('stages the catalog inside the profile and drops the revision before it', async () => {
+    const files = { 'manifest.json': manifestFile([payloadItem]), 'payload/1c-rules/content/rules/1c.md': '# правила\n' }
+    const seeded = fixture(files)
+    await expect(seedShippedCatalog(seeded.options)).resolves.toEqual({ outcome: 'applied' })
+    const stageRoot = join(seeded.options.profileDir, '.1c-catalog')
+    const before = readdirSync(stageRoot)
+    expect(before).toHaveLength(1)
+    expect(existsSync(join(stageRoot, before[0] ?? '', 'payload', '1c-rules', 'content', 'rules', '1c.md'))).toBe(true)
+
+    writeFileSync(join(seeded.catalogDir, 'manifest.json'), manifestFile([payloadItem, mcpItem]))
+    await expect(seedShippedCatalog(seeded.options)).resolves.toEqual({ outcome: 'applied' })
+    const after = readdirSync(stageRoot)
+    expect(after).toHaveLength(1)
+    expect(after[0]).not.toBe(before[0])
   })
 
   it('leaves the marker unwritten when the catalog it names is incomplete', async () => {
