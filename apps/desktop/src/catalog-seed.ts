@@ -9,7 +9,7 @@
 
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { basename, delimiter, join } from 'node:path'
 
 /** Directory beside the packaged application resources holding the packed catalog. */
@@ -255,15 +255,36 @@ function installMcpRow(options: CatalogSeedOptions, item: CatalogItem): void {
   options.note(`[catalog] mcp server mounted: ${serverName}`)
 }
 
+/** Harness-home log recording what seeding did: a packaged window has no console to read. */
+export const CATALOG_LOG_PATH = 'logs/catalog-seed.log'
+
+/** Send each note both to the caller and to the product log on disk. */
+function withCatalogLog(attempt: CatalogSeedOptions): CatalogSeedOptions {
+  const path = join(attempt.homeDir, CATALOG_LOG_PATH)
+  return {
+    ...attempt,
+    note: (message: string) => {
+      attempt.note(message)
+      try {
+        mkdirSync(join(attempt.homeDir, 'logs'), { recursive: true })
+        appendFileSync(path, `${new Date().toISOString()} ${message}\n`)
+      } catch (error) {
+        attempt.note(`[catalog] could not append ${path}: ${String(error)}`)
+      }
+    },
+  }
+}
+
 /**
  * Install the catalog this build ships into the profile, once per catalog revision.
  *
  * Never throws: a failed attempt leaves the marker unwritten, so the next launch retries it, and
  * startup continues with whatever the profile already has.
- * @param options - Packed catalog, profile, Harness home, and the bundled package manager.
+ * @param attempt - Packed catalog, profile, Harness home, and the bundled package manager.
  * @returns Which decision was taken, with the failure text when the attempt was incomplete.
  */
-export async function seedShippedCatalog(options: CatalogSeedOptions): Promise<CatalogSeedResult> {
+export async function seedShippedCatalog(attempt: CatalogSeedOptions): Promise<CatalogSeedResult> {
+  const options = withCatalogLog(attempt)
   try {
     const manifest = readCatalogManifest(options.catalogDir)
     if (manifest === undefined) return { outcome: 'absent' }

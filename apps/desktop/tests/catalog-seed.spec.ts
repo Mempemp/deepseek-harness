@@ -119,6 +119,14 @@ describe('catalog seeding', () => {
     expect(after[0]).not.toBe(before[0])
   })
 
+  it('records what it did in the product log', async () => {
+    const seeded = fixture({ 'manifest.json': manifestFile([payloadItem]), 'payload/1c-rules/content/rules/1c.md': '# правила\n' })
+    await expect(seedShippedCatalog(seeded.options)).resolves.toEqual({ outcome: 'applied' })
+    const log = readFileSync(join(seeded.options.homeDir, 'logs', 'catalog-seed.log'), 'utf8')
+    expect(log).toContain('[catalog] staged')
+    expect(log).toContain('[catalog] applied')
+  })
+
   it('leaves the marker unwritten when the catalog it names is incomplete', async () => {
     const seeded = fixture({ 'manifest.json': manifestFile([{ kind: 'plugin', id: '@vendor/plugin', file: 'plugins/plugin-1.0.0.tgz' }]) })
     const result = await seedShippedCatalog(seeded.options)
