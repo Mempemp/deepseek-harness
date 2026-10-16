@@ -23,7 +23,7 @@ describe('installer preparation preserves application dependencies', () => {
       DSH_DESKTOP_TARGET_ARCH: 'x64',
       DSH_DESKTOP_UNSIGNED: '1',
     }, 'win32', 'x64')
-    expect(config.extraMetadata.dshMandatoryUpdatePolicy).toBeUndefined()
+    expect((config.extraMetadata as Record<string, unknown>).dshMandatoryUpdatePolicy).toBeUndefined()
   })
   it.each(['win32', 'darwin'] as const)('keeps electron-builder responsible for node_modules on %s', async (platform) => {
     execute.mockClear()
