@@ -242,7 +242,10 @@ export function createElectronBuilderConfig(
       perMachine: false,
       allowElevation: false,
       allowToChangeInstallationDirectory: false,
-      installerLanguages: ['en_US', 'zh_CN'],
+      // Russian ships as a third installer language: the shell copy carries one, and a host must not be
+      // asked to pick a language it cannot read. The Russian block in installer/strings.nsh is compiled
+      // only when LANG_RUSSIAN is registered here.
+      installerLanguages: ['en_US', 'zh_CN', 'ru_RU'],
       differentialPackage: true,
     },
     detectUpdateChannel: false,
