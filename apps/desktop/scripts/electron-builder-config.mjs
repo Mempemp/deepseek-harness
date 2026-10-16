@@ -1,6 +1,6 @@
 import { officePackageDirectories } from '../../../scripts/libreoffice-packages.mjs'
 import { X509Certificate } from 'node:crypto'
-import { readFileSync } from 'node:fs'
+import { readFileSync, existsSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -146,8 +146,11 @@ export function createElectronBuilderConfig(
     asarUnpack: unpack,
     extraResources: [
       { from: buildPaths.runtime, to: 'runtime' },
-      // The packed 1C catalog: installed into the profile by the shell on first run.
-      { from: join(buildPaths.root, 'installer-catalog'), to: 'installer-catalog' },
+      // The packed 1C catalog: installed into the profile by the shell on first run. A build without
+      // the catalog (the stock application) ships no directory and seeds nothing.
+      ...(existsSync(join(buildPaths.root, 'installer-catalog'))
+        ? [{ from: join(buildPaths.root, 'installer-catalog'), to: 'installer-catalog' }]
+        : []),
       { from: fileURLToPath(new URL('../resources/icon-windows.png', import.meta.url)), to: 'icon.png' },
       // Windows tray bitmaps; macOS keeps the Dock and ships no menu bar icon.
       ...(packagesWindows ? [{ from: fileURLToPath(new URL('../resources/tray-windows.ico', import.meta.url)), to: 'tray.ico' }] : []),
