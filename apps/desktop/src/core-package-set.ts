@@ -3,6 +3,7 @@
 import { createHash } from 'node:crypto'
 import { existsSync, lstatSync, readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
+import { matchesReleaseVersion } from './release-version.ts'
 
 /** Descriptor copied beside every Desktop profile's local core tarballs. */
 export const DESKTOP_PACKAGE_SET_FILE = 'desktop-packages.json'
@@ -43,17 +44,6 @@ const RELEASE_PACKAGES = [DSH_PACKAGE, DESKTOP_HOST_PACKAGE] as const
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-/**
- * The 1C bundle numbers its own builds as `<core version>-<sub-release>`, so the desktop
- * version may extend the bundled core version by one numeric suffix. The runtime packages
- * themselves keep reporting the plain core version.
- */
-function matchesReleaseVersion(coreVersion: string, desktopVersion: string): boolean {
-  if (coreVersion === desktopVersion) return true
-  if (!desktopVersion.startsWith(`${coreVersion}-`)) return false
-  return /^\d+$/u.test(desktopVersion.slice(coreVersion.length + 1))
 }
 
 /**

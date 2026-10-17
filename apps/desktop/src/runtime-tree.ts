@@ -6,6 +6,7 @@ import { isAbsolute, join, relative, sep } from 'node:path'
 import { promisify } from 'node:util'
 import { valid } from 'semver'
 import { DESKTOP_HOST_PACKAGE } from './core-package-set.ts'
+import { matchesReleaseVersion } from './release-version.ts'
 import { parseDesktopRelease, type DesktopRelease } from './release.ts'
 
 /** Descriptor at the root of the immutable Desktop resource tree. */
@@ -170,7 +171,8 @@ export function readDesktopRuntime(root: string): DesktopRuntimeDescriptor {
   }
   const files = value.files as DesktopRuntimeFile[]
   for (const name of ['@deepseek-ai/dsh', DESKTOP_HOST_PACKAGE]) {
-    if (sharedPackages.find(entry => entry.name === name)?.version !== release.version) {
+    const entry = sharedPackages.find(candidate => candidate.name === name)
+    if (entry === undefined || !matchesReleaseVersion(entry.version, release.version)) {
       throw new Error(`desktop runtime: missing or mismatched ${name}`)
     }
   }
