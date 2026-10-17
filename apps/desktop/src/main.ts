@@ -80,6 +80,14 @@ let windowsLanguage: string | undefined
 let backendReady = false
 /** Error-level console output of the primary window, attached to crash reports. */
 const rendererConsole = new RendererConsoleTail()
+/**
+ * Whether a cold start may be held at the account/API-key welcome window. The 1C bundle ships it
+ * off: the first screen must not be a credentials prompt, and model setup lives in Settings.
+ * `DSH_DESKTOP_WELCOME_GATE=1` restores the upstream behaviour for tests and for the rework.
+ */
+function welcomeGateAtStartup(): boolean {
+  return process.env.DSH_DESKTOP_WELCOME_GATE === '1'
+}
 
 // Platform-conventional logs directory (macOS ~/Library/Logs/<name>, otherwise under userData);
 // set before ready so the first fatal report already resolves under it.
@@ -1228,7 +1236,10 @@ async function main(): Promise<void> {
     locale = resolveDesktopStartupLocale(state.localePreference, systemLanguages)
     windowsLanguage = locale.id
     refreshApplicationMenu()
-    if (!enteredWorkspace && needsWelcome({ loggedIn: state.loggedIn, hasApiKey: state.hasApiKey })) {
+    // The 1C bundle opens straight into the workspace: the account/API-key welcome gate is not a
+    // first-run requirement here (rework the onboarding before turning it back on). Sign-in and
+    // model setup stay reachable from Settings, and the sign-out path still shows the welcome.
+    if (welcomeGateAtStartup() && !enteredWorkspace && needsWelcome({ loggedIn: state.loggedIn, hasApiKey: state.hasApiKey })) {
       // A later login must retain its own activation policy instead of replaying startup focus.
       raiseAfterUpdate = false
       await showWelcome()

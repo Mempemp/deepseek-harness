@@ -109,7 +109,10 @@ body {
   font-weight: 300;
   line-height: 40px;
   text-align: center;
-  white-space: nowrap;
+  /* Russian taglines are longer than the English ones this line was drawn for; wrapping keeps
+     them inside the fixed 600 px welcome window instead of clipping at both edges. */
+  white-space: normal;
+  max-width: 100%;
 }
 
 .tagline h1,

@@ -178,8 +178,12 @@ it.each([false, true])('starts welcome onboarding without carrying update focus 
   state.hasApiKey = false
   state.operations = undefined
   state.accountState.mockResolvedValue({ status: 'signed-out', attempt: null, links: { usageUrl: '', topUpUrl: '' } })
-  if (updated) vi.stubGlobal('process', { ...process, platform: 'win32', argv: ['desktop', '--updated'] })
+  // Electron supplies resourcesPath in the real main process; vitest does not, and the first-run
+  // catalog seed joins it before the welcome decision.
+  vi.stubGlobal('process', { ...process, resourcesPath: '/resources',
+    ...(updated ? { platform: 'win32', argv: ['desktop', '--updated'] } : {}) })
   vi.useFakeTimers()
+  vi.stubEnv('DSH_DESKTOP_WELCOME_GATE', '1')
   vi.stubEnv('DSH_CLIENT_VERSION', '1.2.3')
   vi.stubEnv('DSH_DESKTOP_DEV_PROJECT_DIR', '/development-profile')
   vi.stubEnv('DSH_DESKTOP_NODE_BINARY', '/runtime/node')
@@ -298,4 +302,31 @@ it.each([false, true])('starts welcome onboarding without carrying update focus 
   expect(state.showWorkspace).toHaveBeenCalledOnce()
   expect(state.focusWorkspace).toHaveBeenCalledOnce()
 
+})
+
+it('opens the workspace on a cold start when the welcome gate is off', async () => {
+  vi.resetModules()
+  vi.clearAllMocks()
+  state.preference = 'en'
+  state.hasApiKey = false
+  state.operations = undefined
+  state.accountState.mockResolvedValue({ status: 'signed-out', attempt: null, links: { usageUrl: '', topUpUrl: '' } })
+  vi.useFakeTimers()
+  vi.stubGlobal('process', { ...process, resourcesPath: '/resources' })
+  vi.stubEnv('DSH_CLIENT_VERSION', '1.2.3')
+  vi.stubEnv('DSH_DESKTOP_DEV_PROJECT_DIR', '/development-profile')
+  vi.stubEnv('DSH_DESKTOP_NODE_BINARY', '/runtime/node')
+  vi.stubEnv('DSH_DESKTOP_PNPM_ENTRY', '/runtime/pnpm')
+  vi.stubEnv('DSH_DESKTOP_DSH_DIR', '/runtime/dsh')
+  vi.stubEnv('DSH_DESKTOP_PRIMARY_RUNTIME_DIR', '/runtime/primary-runtime')
+  vi.stubEnv('DSH_DESKTOP_HOST_INSPECT_PORT', undefined)
+  vi.stubEnv('DSH_DESKTOP_OPEN_DEVTOOLS', '0')
+  vi.stubEnv('DSH_DESKTOP_MANDATORY_UPDATE_CONFIG', undefined)
+  vi.stubEnv('DSH_DESKTOP_UPDATE_JOURNAL_DIR', undefined)
+  await import('../src/main.ts')
+  await vi.waitFor(() => { expect(state.loadWorkspace).toHaveBeenCalled() })
+  // The fixture keeps crash recovery active, so the workspace is navigated but not shown; the
+  // contract under test is that no welcome gate stands between the start and the workspace.
+  expect(state.loadWorkspace).toHaveBeenCalledWith('dsh-app://app/')
+  expect(state.beforeWelcome).not.toHaveBeenCalled()
 })
