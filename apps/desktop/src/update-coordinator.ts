@@ -66,7 +66,7 @@ export class DesktopUpdateCoordinator {
     }
     this.updater.autoDownload = false
     this.updater.autoInstallOnAppQuit = false
-    this.updater.channel = 'nightly'
+    this.updater.channel = 'latest'
     this.updater.allowPrerelease = true
     // Selecting a channel can enable downgrade in electron-updater.
     this.updater.allowDowngrade = false
