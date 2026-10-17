@@ -80,10 +80,10 @@ body {
   display: grid;
   flex: 1;
   min-height: 0;
-  grid-template-rows: 40px minmax(0, 1fr) 104px;
+  grid-template-rows: 40px minmax(0, 1fr) 164px;
   justify-items: center;
   align-items: center;
-  padding: 24px 48px 76px;
+  padding: 24px 48px 40px;
 }
 
 .welcome > .tagline,
@@ -141,7 +141,7 @@ body {
   display: flex;
   flex: none;
   flex-direction: column;
-  gap: 16px;
+  gap: 12px;
   width: 240px;
 }
 
