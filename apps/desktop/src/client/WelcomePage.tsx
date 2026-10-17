@@ -209,7 +209,7 @@ export function Welcome({ api }: { api: WelcomeApi }) {
           onClick={() => { void cancel() }}>{m.welcomeAuthCancel}</button>
       </div>
       <div id="entry-actions" className="actions" hidden={page !== 'entry'}>
-        <button id="skip" className="primary" type="button" disabled={busy} onClick={() => { void api.analytics?.('auth_page_click', { button_name: 'skip' }); void skip() }}>{m.welcomeKeyLater}</button>
+        <button id="skip" className="primary" type="button" disabled={busy} onClick={() => { void skip() }}>{m.welcomeKeyLater}</button>
         <button id="sign-in" className="secondary" type="button" onClick={() => { void api.analytics?.('auth_page_click', { button_name: 'sign_in' }); void start() }}>{m.welcomeSignIn}</button>
         <button ref={keyButton} id="api-key" className="secondary" type="button" onClick={() => { void api.analytics?.('auth_page_click', { button_name: 'api-key' }); navigate('key') }}>{m.welcomeApiKey}</button>
       </div>
