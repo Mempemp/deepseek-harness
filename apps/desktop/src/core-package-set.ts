@@ -46,6 +46,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
+ * The 1C bundle numbers its own builds as `<core version>-<sub-release>`, so the desktop
+ * version may extend the bundled core version by one numeric suffix. The runtime packages
+ * themselves keep reporting the plain core version.
+ */
+function matchesReleaseVersion(coreVersion: string, desktopVersion: string): boolean {
+  if (coreVersion === desktopVersion) return true
+  if (!desktopVersion.startsWith(`${coreVersion}-`)) return false
+  return /^\d+$/u.test(desktopVersion.slice(coreVersion.length + 1))
+}
+
+/**
  * Validate package-set data read from a release artifact or active profile.
  * @param value - Parsed descriptor JSON.
  * @param expectedReleaseVersion - Required dsh and Desktop Host version when validating one release.
@@ -86,7 +97,7 @@ export function parseDesktopCorePackageSet(
   for (const name of RELEASE_PACKAGES) {
     const entry = packages.find(candidate => candidate.name === name)
     if (entry === undefined) throw new Error(`desktop package set: missing ${name}`)
-    if (expectedReleaseVersion !== undefined && entry.version !== expectedReleaseVersion) {
+    if (expectedReleaseVersion !== undefined && !matchesReleaseVersion(entry.version, expectedReleaseVersion)) {
       throw new Error(`desktop package set: ${name}@${entry.version} does not match Desktop ${expectedReleaseVersion}`)
     }
   }
