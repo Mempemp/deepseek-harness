@@ -20,6 +20,7 @@ Var InstallerLaunch
 Var InstallerExpanded
 !include "${__FILEDIR__}\path.nsh"
 !include "${__FILEDIR__}\drawing.nsh"
+!include "${__FILEDIR__}\text-fit.nsh"
 
 ; All layout values are 96-DPI logical pixels.
 !macro InstallerPlace HWND X Y W H
@@ -91,6 +92,11 @@ Function InstallerCreate
     ${NSD_CreateButton} 0 0 0 0 "$(INSTALLER_CHOOSE_PATH)"
     Pop $InstallerChoose
     !insertmacro InstallerPlace $InstallerChoose 232 438 136 28
+    StrCpy $4 "$(INSTALLER_CHOOSE_PATH)"
+    !insertmacro InstallerMeasureText $InstallerChoose $InstallerSmallFont $4 R8
+    !insertmacro InstallerLabelPadding 28 R2
+    IntOp $R8 $R8 + $R2
+    !insertmacro InstallerFitControl $InstallerChoose R8 300 438 28
     ${NSD_OnClick} $InstallerChoose InstallerExpandPath
     ${NSD_OnNotify} $InstallerChoose InstallerPaintButton
     ${NSD_CreateBitmap} 0 0 0 0 ""
@@ -160,6 +166,17 @@ Function InstallerCreate
     ${NSD_CreateButton} 0 0 0 0 "$(INSTALLER_INSTALL)"
     Pop $InstallerButton
     !insertmacro InstallerPlace $InstallerButton ${INSTALLER_BUTTON_X} ${INSTALLER_BUTTON_Y} ${INSTALLER_BUTTON_WIDTH} ${INSTALLER_BUTTON_HEIGHT}
+    ; The button carries the install or the finish label; hold the wider of the two.
+    StrCpy $4 "$(INSTALLER_INSTALL)"
+    !insertmacro InstallerMeasureText $InstallerButton $InstallerFont $4 R8
+    StrCpy $4 "$(INSTALLER_FINISH)"
+    !insertmacro InstallerMeasureText $InstallerButton $InstallerFont $4 R9
+    ${If} $R9 > $R8
+        StrCpy $R8 $R9
+    ${EndIf}
+    !insertmacro InstallerLabelPadding 48 R2
+    IntOp $R8 $R8 + $R2
+    !insertmacro InstallerFitControl $InstallerButton R8 300 ${INSTALLER_BUTTON_Y} ${INSTALLER_BUTTON_HEIGHT}
     SendMessage $InstallerButton ${WM_SETFONT} $InstallerFont 1
     ${NSD_OnClick} $InstallerButton InstallerStart
     ${NSD_OnNotify} $InstallerButton InstallerPaintButton
