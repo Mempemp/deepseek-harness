@@ -83,7 +83,7 @@ body {
   grid-template-rows: 40px minmax(0, 1fr) 164px;
   justify-items: center;
   align-items: center;
-  padding: 24px 48px 40px;
+  padding: 24px 48px 56px;
 }
 
 .welcome > .tagline,
