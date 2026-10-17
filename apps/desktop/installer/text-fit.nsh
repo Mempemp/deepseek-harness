@@ -27,6 +27,7 @@
 ; Centres a control of the given device-pixel width on a 96-DPI column.
 !macro InstallerFitControl HWND WIDTH CENTRE Y HEIGHT
     System::Call 'kernel32::MulDiv(i ${CENTRE}, i $InstallerDpi, i 96) i.r0'
+    IntOp $0 $0 * 2
     IntOp $0 $0 - $${WIDTH}
     IntOp $0 $0 / 2
     System::Call 'kernel32::MulDiv(i ${Y}, i $InstallerDpi, i 96) i.r1'
