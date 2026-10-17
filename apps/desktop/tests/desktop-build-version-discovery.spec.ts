@@ -35,6 +35,12 @@ describe('desktop build version discovery', () => {
       .resolves.toBe(`${PRERELEASE}.${DATE}.1`)
   })
 
+  it('recognises the bundle artifact name as well as the upstream one', async () => {
+    const artifactsRoot = await artifactsWith([`DSH-1C-Setup-${PRERELEASE}.${DATE}.2-win-x64.exe`])
+    await expect(suggestDesktopBuildVersion({ productVersion: PRERELEASE, target: 'win-x64', environment: {}, date: DATE, artifactsRoot }))
+      .resolves.toBe(`${PRERELEASE}.${DATE}.3`)
+  })
+
   it('numbers a stable product version under the documented test prerelease', async () => {
     const artifactsRoot = await artifactsWith([`deepseek-harness-${STABLE}-test.${DATE}.4-win-x64.exe`])
     await expect(suggestDesktopBuildVersion({ productVersion: STABLE, target: 'win-x64', environment: {}, date: DATE, artifactsRoot }))
