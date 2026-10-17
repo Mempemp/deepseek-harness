@@ -24,6 +24,7 @@ import {
 } from 'electron'
 import { resolveDesktopPaths } from './paths.ts'
 import { CATALOG_RESOURCES_DIR, seedShippedCatalog } from './catalog-seed.ts'
+import { migrateLegacyHome } from './legacy-migration.ts'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import { DesktopProjectManager } from './project-manager.ts'
 import { DesktopHostFatalError, DesktopHostProcess, DesktopHostUncleanExitError } from './host-process.ts'
@@ -571,6 +572,16 @@ async function main(): Promise<void> {
       await navigateMain(applicationUrl)
       await backend.start(async () => {
         await Promise.all([manager.applyRelease(), prepareHostEnvironment()])
+        // Predecessor data (sessions, storages, user content) is carried into this home once,
+        // before the catalog seeds the profile; settings and credentials are not migrated.
+        const legacy = await migrateLegacyHome({
+          legacyDir: join(app.getPath('appData'), 'dsh-desktop', 'harness'),
+          homeDir: resolveDshHome(),
+          note: (message: string) => { console.error(message) },
+        })
+        if (legacy.outcome === 'partial') {
+          console.error(`legacy migration incomplete: ${legacy.detail ?? ''}`)
+        }
         // The catalog this build ships is installed before the Host starts: the profile exists by now,
         // and package operations on a running Host would fight it for the profile lock.
         const seededCatalog = await seedShippedCatalog({
