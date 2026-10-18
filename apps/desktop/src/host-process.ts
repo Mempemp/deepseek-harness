@@ -49,7 +49,7 @@ export interface DesktopQuitInspection {
 export const QUIT_INSPECTION_DEADLINE_MS = 2_000
 
 /** Graceful teardown window before the desktop escalates to signals on the host process. */
-export const GRACEFUL_TEARDOWN_MS = 20_000
+export const GRACEFUL_TEARDOWN_MS = 5_000
 
 const MAX_HOST_DIAGNOSTIC_CHARS = 64 * 1024
 
@@ -296,8 +296,9 @@ export class DesktopHostProcess {
     if (child.connected) child.send({ type: 'shutdown' }, (error) => { if (error !== null) this.fail(error) })
     const exited = this.exitPromise ?? Promise.resolve()
     // A profile with many plugins and MCP servers flushes slowly; the acknowledgement, not the
-    // process exit, is what proves the tasks were stopped.
-    const graceful = await exitsWithin(exited, teardownMs)
+    // process exit, is what proves the tasks were stopped. An ordinary quit keeps a short window so
+    // the single-instance lock is released before the user launches the application again.
+    const graceful = await exitsWithin(exited, requireGraceful ? teardownMs : Math.min(teardownMs, 2_000))
     if (!graceful) child.kill('SIGTERM')
     if (!await exitsWithin(exited, 5_000)) {
       child.kill('SIGKILL')

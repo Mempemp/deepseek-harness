@@ -1,6 +1,8 @@
 ; NSIS owns installer localization independently of the Electron application locale.
 LangString INSTALLER_INSTALL ${LANG_ENGLISH} "Install now"
 LangString INSTALLER_INSTALL ${LANG_SIMPCHINESE} "立即安装"
+LangString INSTALLER_UPDATE ${LANG_ENGLISH} "Update"
+LangString INSTALLER_UPDATE ${LANG_SIMPCHINESE} "更新"
 LangString INSTALLER_FINISH ${LANG_ENGLISH} "Finish"
 LangString INSTALLER_FINISH ${LANG_SIMPCHINESE} "完成"
 LangString INSTALLER_NATIVE_PROGRESS ${LANG_ENGLISH} "Preparing installation… %d%%"
@@ -60,6 +62,7 @@ LangString INSTALLER_EXTRACT_COPIED ${LANG_SIMPCHINESE} "错误信息已复制�
 ; language list; an unregistered id resolves to another language's id and would overwrite its string.
 !ifdef LANG_RUSSIAN
   LangString INSTALLER_INSTALL ${LANG_RUSSIAN} "Установить сейчас"
+  LangString INSTALLER_UPDATE ${LANG_RUSSIAN} "Обновить"
   LangString INSTALLER_FINISH ${LANG_RUSSIAN} "Готово"
   LangString INSTALLER_NATIVE_PROGRESS ${LANG_RUSSIAN} "Подготовка к установке… %d%%"
   LangString INSTALLER_PROGRESS_EXTRACT ${LANG_RUSSIAN} "Распаковка файлов… %d%%"
