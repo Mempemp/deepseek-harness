@@ -13,15 +13,17 @@
 
 import { appendFileSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { dump, load } from 'js-yaml'
 
 /** Home-relative marker recording that the predecessor data has already been carried over. */
 export const LEGACY_MIGRATION_MARKER = '.legacy-migrated'
 
 /**
  * Marker schema written by this build.
- * 1 — content trees only; 2 — also reconciles credentials and the workspace registry.
+ * 1 — content trees only; 2 — also reconciles credentials and the workspace registry;
+ * 3 — also merges the MCP manager's server list; 4 — also merges the model and provider choices.
  */
-export const LEGACY_MIGRATION_VERSION = 2
+export const LEGACY_MIGRATION_VERSION = 4
 
 /** Top-level entries of the predecessor home that are user content and safe to copy as-is. */
 export const LEGACY_CONTENT_DIRS = [
@@ -37,6 +39,9 @@ export const LEGACY_CONTENT_DIRS = [
 
 /** Predecessor store file the MCP manager reads as its legacy store. */
 export const LEGACY_MCP_STORE = 'dsh-mcp.json'
+
+/** MCP manager store that holds the servers a user configured in its panel. */
+export const LEGACY_MCP_MANAGER_STORE = '@wingsky-1/dsh-mcp-manager/mcp.json'
 
 /** Harness-home log recording what the migration did: a packaged window has no console to read. */
 export const LEGACY_MIGRATION_LOG = 'logs/legacy-migration.log'
@@ -69,17 +74,31 @@ export function legacyMigrationMarked(homeDir: string): boolean {
 }
 
 /** Marker schema version recorded in the home, or undefined when there is no marker. */
+interface LegacyMarker { version?: number; modelSettings?: boolean }
+
+/** The marker as written by whichever build migrated this home first. */
+function readMarker(homeDir: string): LegacyMarker {
+  const path = join(homeDir, LEGACY_MIGRATION_MARKER)
+  if (!existsSync(path)) return {}
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'))
+    if (!isRecord(parsed)) return { version: 1 }
+    const version = parsed.version
+    const modelSettings = parsed.modelSettings
+    return {
+      version: typeof version === 'number' ? version : 1,
+      ...typeof modelSettings === 'boolean' ? { modelSettings } : {},
+    }
+  } catch {
+    return { version: 1 }
+  }
+}
+
+/** Marker schema version recorded in the home, or undefined when there is no marker. */
 function readMarkerVersion(homeDir: string): number | undefined {
   const path = join(homeDir, LEGACY_MIGRATION_MARKER)
   if (!existsSync(path)) return undefined
-  try {
-    const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'))
-    if (typeof parsed !== 'object' || parsed === null) return 1
-    const version = (parsed as { version?: unknown }).version
-    return typeof version === 'number' ? version : 1
-  } catch {
-    return 1
-  }
+  return readMarker(homeDir).version
 }
 
 /** Copy one file or directory tree into the home, never overwriting anything already there. */
@@ -252,6 +271,176 @@ function reconcileWorkspaces(legacyDir: string, homeDir: string, note: (message:
   note(`[legacy] merged ${changed} workspace entries into ${WORKSPACE_STORE}`)
 }
 
+/**
+ * Merge the predecessor MCP server list into the manager's store.
+ *
+ * The panel keeps its servers in the plugin's own store, which the content copy never touches. Servers
+ * are matched by name and merged, never replaced: a home that already runs the catalog's entries keeps
+ * them and gains the ones the user configured before.
+ * @param legacyDir - Predecessor home.
+ * @param homeDir - This build's home.
+ * @param note - Decision sink.
+ */
+function reconcileMcpServers(legacyDir: string, homeDir: string, note: (message: string) => void): void {
+  const source = join(legacyDir, LEGACY_MCP_MANAGER_STORE)
+  if (!existsSync(source)) return
+  const destination = join(homeDir, LEGACY_MCP_MANAGER_STORE)
+  if (!existsSync(destination)) {
+    mkdirSync(dirname(destination), { recursive: true })
+    copyFileSync(source, destination)
+    note(`[legacy] carried ${LEGACY_MCP_MANAGER_STORE}`)
+    return
+  }
+  interface Server { name?: string; id?: string }
+  interface Store { version?: number; servers?: Server[] }
+  let legacyStore: Store
+  let homeStore: Store
+  try {
+    legacyStore = JSON.parse(readFileSync(source, 'utf8')) as Store
+    homeStore = JSON.parse(readFileSync(destination, 'utf8')) as Store
+  } catch (error) {
+    note(`[legacy] ${LEGACY_MCP_MANAGER_STORE} unreadable, kept as is: ${String(error)}`)
+    return
+  }
+  const servers = Array.isArray(homeStore.servers) ? [...homeStore.servers] : []
+  const known = new Set(servers.map(server => String(server.name ?? server.id ?? '')).filter(Boolean))
+  let added = 0
+  for (const server of Array.isArray(legacyStore.servers) ? legacyStore.servers : []) {
+    const name = String(server.name ?? server.id ?? '')
+    if (name === '' || known.has(name)) continue
+    servers.push(server)
+    known.add(name)
+    added += 1
+  }
+  if (added === 0) return
+  homeStore.servers = servers
+  writeFileSync(destination, `${JSON.stringify(homeStore, undefined, 2)}\n`)
+  note(`[legacy] merged ${added} MCP server(s) into ${LEGACY_MCP_MANAGER_STORE}`)
+}
+
+/** Plugin entries whose config carries the user's provider and model choices. */
+const MODEL_CONFIG_ENTRY = /^(?:agent-default-model|llm-.+)$/
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/** Union two config values, keeping everything the home already has. */
+function mergeConfigValue(kept: unknown, carried: unknown): unknown {
+  if (kept === undefined) return carried
+  if (isRecord(kept) && isRecord(carried)) {
+    const merged: Record<string, unknown> = { ...kept }
+    for (const [key, value] of Object.entries(carried)) merged[key] = mergeConfigValue(merged[key], value)
+    return merged
+  }
+  if (Array.isArray(kept) && Array.isArray(carried)) {
+    const identity = (item: unknown): string => {
+      if (isRecord(item)) {
+        if (typeof item.id === 'string') return item.id
+        if (typeof item.name === 'string') return item.name
+      }
+      return JSON.stringify(item)
+    }
+    const known = new Set(kept.map(identity))
+    return [...kept, ...carried.filter(item => !known.has(identity(item)))]
+  }
+  return kept
+}
+
+/** Read a loader patch file as its entry list, or nothing when it does not parse. */
+function readPatchEntries(path: string): unknown[] | undefined {
+  try {
+    const parsed: unknown = load(readFileSync(path, 'utf8'))
+    if (parsed === null) return []
+    return Array.isArray(parsed) ? parsed : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function modelEntries(entries: unknown[]): Record<string, unknown>[] {
+  return entries.filter((entry): entry is Record<string, unknown> =>
+    isRecord(entry) && typeof entry.id === 'string' && MODEL_CONFIG_ENTRY.test(entry.id))
+}
+
+/** The predecessor profile that holds the model choices: the one patch carrying `llm-*` entries. */
+function legacyProfilePatch(legacyDir: string): string | undefined {
+  const root = join(legacyDir, 'profiles')
+  if (!existsSync(root)) return undefined
+  const candidates = readdirSync(root)
+    .map(name => join(root, name, 'cordis.patch.yml'))
+    .filter(path => existsSync(path))
+  return candidates.find(path => modelEntries(readPatchEntries(path) ?? []).length > 0)
+}
+
+/** This build's profile patch; undefined while the host has not created the profile yet. */
+function homeProfilePatch(homeDir: string): string | undefined {
+  const root = join(homeDir, 'profiles')
+  if (!existsSync(root)) return undefined
+  if (existsSync(join(root, 'desktop'))) return join(root, 'desktop', 'cordis.patch.yml')
+  const patches = readdirSync(root)
+    .map(name => join(root, name, 'cordis.patch.yml'))
+    .filter(path => existsSync(path))
+  return patches.length === 1 ? patches[0] : undefined
+}
+
+/** Write the patch back, keeping the comment header the loader ships with. */
+function writePatchEntries(path: string, entries: unknown[]): void {
+  const header = existsSync(path)
+    ? readFileSync(path, 'utf8').split('\n').filter((_, index, all) => all.slice(0, index + 1).every(part => part.startsWith('#'))).join('\n')
+    : ''
+  const body = dump(entries, { lineWidth: -1, noRefs: true })
+  mkdirSync(dirname(path), { recursive: true })
+  writeFileSync(path, header.length > 0 ? `${header}\n${body}` : body)
+}
+
+/**
+ * Carry the user's models and provider choices into this build's profile.
+ *
+ * The predecessor kept them in its profile patch (`agent-default-model`, `llm-*`), which the content
+ * copy never sees. Entries are merged by id and their configs by key, arrays by model id: everything
+ * the new profile already carries stays exactly as it is, and nothing is dropped.
+ * @param legacyDir - Predecessor home.
+ * @param homeDir - This build's home.
+ * @param note - Decision sink.
+ * @returns True when nothing is left to do, so the marker may record the step as finished.
+ */
+function reconcileModelSettings(legacyDir: string, homeDir: string, note: (message: string) => void): boolean {
+  const source = legacyProfilePatch(legacyDir)
+  if (source === undefined) return true
+  const carried = modelEntries(readPatchEntries(source) ?? [])
+  if (carried.length === 0) return true
+  const destination = homeProfilePatch(homeDir)
+  // A home the host has not started yet has no profile; the next launch retries this step.
+  if (destination === undefined) return false
+  const current = existsSync(destination) ? readPatchEntries(destination) : []
+  if (current === undefined) {
+    note(`[legacy] ${destination} unreadable, model settings left as is`)
+    return true
+  }
+  const merged = [...current]
+  let changed = 0
+  for (const entry of carried) {
+    const index = merged.findIndex(candidate => isRecord(candidate) && candidate.id === entry.id)
+    if (index < 0) {
+      merged.push(entry)
+      changed += 1
+      continue
+    }
+    const target = merged[index] as Record<string, unknown>
+    const before = JSON.stringify(target.config ?? null)
+    const config = mergeConfigValue(target.config, entry.config)
+    if (JSON.stringify(config ?? null) === before) continue
+    merged[index] = { ...target, config }
+    changed += 1
+  }
+  if (changed === 0) return true
+  if (existsSync(destination)) copyFileSync(destination, `${destination}.before-legacy-migration`)
+  writePatchEntries(destination, merged)
+  note(`[legacy] merged ${changed} model/provider section(s) into ${destination}`)
+  return true
+}
+
 /** Send each note both to the caller and to the product log on disk. */
 function withMigrationLog(attempt: LegacyMigrationOptions): LegacyMigrationOptions {
   const path = join(attempt.homeDir, LEGACY_MIGRATION_LOG)
@@ -283,8 +472,12 @@ function withMigrationLog(attempt: LegacyMigrationOptions): LegacyMigrationOptio
 export async function migrateLegacyHome(attempt: LegacyMigrationOptions): Promise<LegacyMigrationResult> {
   const options = withMigrationLog(attempt)
   try {
-    const version = readMarkerVersion(options.homeDir)
-    if (version === LEGACY_MIGRATION_VERSION) return { outcome: 'skipped' }
+    const marker = readMarker(options.homeDir)
+    const version = marker.version
+    // The model step waits for the host to create the profile, so it may still be pending on a home
+    // whose marker already names the current schema.
+    const modelsPending = marker.version === LEGACY_MIGRATION_VERSION && marker.modelSettings !== true
+    if (marker.version === LEGACY_MIGRATION_VERSION && !modelsPending) return { outcome: 'skipped' }
     if (!existsSync(options.legacyDir)) return { outcome: 'absent' }
     let carried = 0
     if (version === undefined) {
@@ -307,13 +500,16 @@ export async function migrateLegacyHome(attempt: LegacyMigrationOptions): Promis
     }
     reconcileCredentials(options.legacyDir, options.homeDir, options.note)
     reconcileWorkspaces(options.legacyDir, options.homeDir, options.note)
-    const marker = {
+    reconcileMcpServers(options.legacyDir, options.homeDir, options.note)
+    const modelSettings = reconcileModelSettings(options.legacyDir, options.homeDir, options.note)
+    const next = {
       version: LEGACY_MIGRATION_VERSION,
       legacyDir: options.legacyDir,
       migratedAt: new Date().toISOString(),
+      modelSettings,
     }
     mkdirSync(options.homeDir, { recursive: true })
-    writeFileSync(join(options.homeDir, LEGACY_MIGRATION_MARKER), `${JSON.stringify(marker, undefined, 2)}\n`)
+    writeFileSync(join(options.homeDir, LEGACY_MIGRATION_MARKER), `${JSON.stringify(next, undefined, 2)}\n`)
     options.note(`[legacy] migrated ${carried} content trees into ${options.homeDir}`)
     return { outcome: 'applied' }
   } catch (error) {
