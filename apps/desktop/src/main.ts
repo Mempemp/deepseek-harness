@@ -573,7 +573,8 @@ async function main(): Promise<void> {
       await backend.start(async () => {
         await Promise.all([manager.applyRelease(), prepareHostEnvironment()])
         // Predecessor data (sessions, storages, user content) is carried into this home once,
-        // before the catalog seeds the profile; settings and credentials are not migrated.
+        // before the catalog seeds the profile, and the credential store and workspace registry are
+        // reconciled so a configured user keeps their key and their session folders.
         const legacy = await migrateLegacyHome({
           legacyDir: join(app.getPath('appData'), 'dsh-desktop', 'harness'),
           homeDir: resolveDshHome(),

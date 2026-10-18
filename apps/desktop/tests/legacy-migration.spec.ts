@@ -44,11 +44,59 @@ describe('legacy home migration', () => {
     expect(legacyMigrationMarked(f.homeDir)).toBe(false)
   })
 
-  it('skips when the home already records a migration', async () => {
+  it('skips when the home already records a migration of the current schema', async () => {
     const f = fixture()
     mkdirSync(f.homeDir, { recursive: true })
-    writeFileSync(join(f.homeDir, LEGACY_MIGRATION_MARKER), '{"legacyDir":"x"}\n')
+    writeFileSync(join(f.homeDir, LEGACY_MIGRATION_MARKER), '{"version":2,"legacyDir":"x"}\n')
     expect((await migrateLegacyHome(f.options)).outcome).toBe('skipped')
+  })
+
+  it('repairs a home migrated by schema 1: adopts the predecessor credentials', async () => {
+    const f = fixture(
+      {
+        '.credentials.yaml': "version: 1\nrecords:\n  grant:\n    kind: grant\nrefs:\n  DEEPSEEK_API_KEY: 'sk-predecessor'\n",
+      },
+      {
+        [LEGACY_MIGRATION_MARKER]: '{"legacyDir":"x"}\n',
+        '.credentials.yaml': 'version: 1\nrecords:\n  grant:\n    kind: grant\n',
+      },
+    )
+    const result = await migrateLegacyHome(f.options)
+    expect(result.outcome).toBe('applied')
+    expect(readFileSync(join(f.homeDir, '.credentials.yaml'), 'utf8')).toContain('DEEPSEEK_API_KEY')
+    expect(existsSync(join(f.homeDir, '.credentials.yaml.before-legacy-migration'))).toBe(true)
+    expect(JSON.parse(readFileSync(join(f.homeDir, LEGACY_MIGRATION_MARKER), 'utf8')).version).toBe(2)
+  })
+
+  it('keeps home credentials that already hold every predecessor key', async () => {
+    const text = "version: 1\nrecords:\n  grant:\n    kind: grant\nrefs:\n  DEEPSEEK_API_KEY: 'sk-home'\n"
+    const f = fixture({ '.credentials.yaml': text }, { '.credentials.yaml': text })
+    await migrateLegacyHome(f.options)
+    expect(readFileSync(join(f.homeDir, '.credentials.yaml'), 'utf8')).toBe(text)
+    expect(existsSync(join(f.homeDir, '.credentials.yaml.before-legacy-migration'))).toBe(false)
+  })
+
+  it('merges workspace membership left behind by a stale registry', async () => {
+    const legacy = JSON.stringify({
+      global: { initialized: true, workspaceIds: ['w1', 'w2'], archivedSessionIds: ['s9'] },
+      tables: { workspaces: {
+        w1: { path: 'D:\\work\\a', title: 'a', sessionIds: ['s1', 's2'] },
+        w2: { path: 'D:\\work\\b', title: 'b', sessionIds: ['s3'] },
+      } },
+    })
+    const home = JSON.stringify({
+      global: { initialized: true, workspaceIds: ['w1'], archivedSessionIds: [] },
+      tables: { workspaces: { w1: { path: 'D:/work/a/', title: 'a', sessionIds: ['s1'] } } },
+    })
+    const f = fixture(
+      { 'storages/workspace.json': legacy },
+      { [LEGACY_MIGRATION_MARKER]: '{"legacyDir":"x"}\n', 'storages/workspace.json': home },
+    )
+    await migrateLegacyHome(f.options)
+    const merged = JSON.parse(readFileSync(join(f.homeDir, 'storages', 'workspace.json'), 'utf8'))
+    expect(merged.tables.workspaces.w1.sessionIds).toEqual(['s1', 's2'])
+    expect(merged.tables.workspaces.w2.sessionIds).toEqual(['s3'])
+    expect(merged.global.archivedSessionIds).toEqual(['s9'])
   })
 
   it('carries user content into the home and writes the marker', async () => {
