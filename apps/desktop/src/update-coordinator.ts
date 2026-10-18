@@ -66,7 +66,10 @@ export class DesktopUpdateCoordinator {
     }
     this.updater.autoDownload = false
     this.updater.autoInstallOnAppQuit = false
-    this.updater.channel = 'latest'
+    // The 1C line keeps its own feed file. `latest.yml` stays reserved for the predecessor
+    // 0.11.x builds: they compare their version against it and would never accept a 0.2.x
+    // release, so every release ships a bridge manifest there and `dsh1c.yml` for us.
+    this.updater.channel = 'dsh1c'
     this.updater.allowPrerelease = true
     // Selecting a channel can enable downgrade in electron-updater.
     this.updater.allowDowngrade = false

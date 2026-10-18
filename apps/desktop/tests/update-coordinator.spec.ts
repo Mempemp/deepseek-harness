@@ -145,7 +145,7 @@ describe('desktop update coordinator', () => {
       'available', 'downloading', 'downloading', 'verifying', 'ready', 'installing',
     ])
     expect(f.updater).toMatchObject({
-      autoDownload: false, autoInstallOnAppQuit: false, channel: 'latest',
+      autoDownload: false, autoInstallOnAppQuit: false, channel: 'dsh1c',
       allowPrerelease: true, allowDowngrade: false,
     })
   })
