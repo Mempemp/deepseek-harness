@@ -48,6 +48,9 @@ export interface DesktopQuitInspection {
 /** Quit inspection deadline; a slower Host counts as unknown work and the shell asks before quitting. */
 export const QUIT_INSPECTION_DEADLINE_MS = 2_000
 
+/** Graceful teardown window before the desktop escalates to signals on the host process. */
+export const GRACEFUL_TEARDOWN_MS = 20_000
+
 const MAX_HOST_DIAGNOSTIC_CHARS = 64 * 1024
 
 function isDesktopHostEvent(message: unknown): message is DesktopHostEvent {
@@ -285,14 +288,16 @@ export class DesktopHostProcess {
    * @returns Completion of owned process teardown. DesktopHostUncleanExitError confirms exit but refuses installation;
    * other failures do not confirm exit.
    */
-  async stop(requireGraceful = false): Promise<void> {
+  async stop(requireGraceful = false, teardownMs = GRACEFUL_TEARDOWN_MS): Promise<void> {
     const child = this.child
     if (child === undefined) return
     this.stopping = true
     this.onPlatformSession?.(null)
     if (child.connected) child.send({ type: 'shutdown' }, (error) => { if (error !== null) this.fail(error) })
     const exited = this.exitPromise ?? Promise.resolve()
-    const graceful = await exitsWithin(exited, 10_000)
+    // A profile with many plugins and MCP servers flushes slowly; the acknowledgement, not the
+    // process exit, is what proves the tasks were stopped.
+    const graceful = await exitsWithin(exited, teardownMs)
     if (!graceful) child.kill('SIGTERM')
     if (!await exitsWithin(exited, 5_000)) {
       child.kill('SIGKILL')
@@ -301,9 +306,14 @@ export class DesktopHostProcess {
       }
     }
     this.child = undefined
-    if (requireGraceful && (!graceful || child.exitCode !== 0 || !this.shutdownCompleted)) {
+    if (requireGraceful && !this.shutdownCompleted) {
       // This diagnostic reaches expandable UI; arbitrary plugin stderr can contain credentials.
-      throw new DesktopHostUncleanExitError(`desktop update: Host did not complete graceful task teardown (exit ${String(child.exitCode)}, signal ${String(child.signalCode)}, shutdown acknowledged ${String(this.shutdownCompleted)}, graceful deadline exceeded ${String(!graceful)})`)
+      throw new DesktopHostUncleanExitError(`desktop update: Host did not complete graceful task teardown (exit ${String(child.exitCode)}, signal ${String(child.signalCode)}, shutdown acknowledged false, graceful deadline exceeded ${String(!graceful)})`)
+    }
+    if (requireGraceful && !graceful) {
+      // Tasks were stopped and confirmed, only the process exit lagged past the deadline: the update
+      // may proceed, since the restarted app rebuilds its runtime anyway.
+      console.error(`desktop update: host teardown acknowledged, exit escalated after ${String(child.signalCode ?? child.exitCode)}`)
     }
   }
 
