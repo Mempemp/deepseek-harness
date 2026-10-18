@@ -109,13 +109,14 @@
 /* Nav rail (figma .Setting-nav 501:29958): 188 wide, pad (12,22,12,0),
    gap 18, no own fill — the panel white shows through.
    Russian tab titles ("1С: Параметры проектов", "Центр уведомлений") are longer than the
-   English/Chinese ones this rail was drawn for; the extra 36 px keeps them off the ellipsis. */
+   English/Chinese ones this rail was drawn for; 248 px leaves 172 px for the label, which
+   fits the 160-165 px of "1С: Параметры проектов" without an ellipsis. */
 .nav {
   flex: none;
   display: flex;
   flex-direction: column;
   gap: 18px;
-  width: 224px;
+  width: 248px;
   padding: 22px 12px 0;
   box-sizing: border-box;
 }
