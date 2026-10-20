@@ -1,77 +1,40 @@
-# DeepSeek Harness
+# DSH для 1С — исходники сборки
 
-English | [中文](README.zh.md)
+Это форк [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness). Ветка `1c/main` — наша
+линия поверх тега апстрима `dsh-v0.2.0-rc.2`: русская оболочка и мастер установки, офлайн-каталог
+плагинов для 1С, собственный канал обновлений. Ниже по истории — DeepSeek Harness без изменений.
 
-DeepSeek Harness (`dsh`) is an open-source agent harness developed by [DeepSeek AI](https://deepseek.com).
+| Что | Где |
+| --- | --- |
+| Установщик `.exe` | [релизы сборки](https://github.com/Mempemp/DSH-1C-deskop-bundle/releases/latest) |
+| Состав каталога: плагины, MCP-серверы, правила | [DSH-1C-deskop-bundle](https://github.com/Mempemp/DSH-1C-deskop-bundle), `installer-flavor.yml` |
+| Порядок сборки и релиза | там же, `docs/development.md` и `docs/release-runbook.md` |
+| Агентный рантайм, другие платформы, документация | [deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness) |
 
-It is built on an **everything-is-a-plugin** architecture and powered by [Cordis](https://github.com/cordiverse/cordis), whose design is described in [_A Programming Paradigm for Spatiotemporal Composability_](https://arxiv.org/abs/2608.25512).
+## Сборка
 
-Documentation: [https://deepseek-harness.github.io/deepseek-harness/](https://deepseek-harness.github.io/deepseek-harness/)
-
-## Developer preview
-
-DeepSeek Harness is in _developer preview_ and iterating rapidly. **THERE WILL BE COMPATIBILITY-BREAKING CHANGES.**
-
-Review the [safety notice](SAFETY.md) before running the project.
-
-## Run
-
-### Run from `npm`
-
-Install `Node.js`, then run:
+Каталог 1С живёт отдельным репозиторием, поэтому клонировать нужно оба, рядом:
 
 ```sh
-npx @deepseek-ai/dsh web
-```
-
-The command starts the Web UI at `http://127.0.0.1:3080` by default and opens it in the default browser for a local launch. An SSH launch only prints the host URL because the SSH client or editor owns the local forwarded address. Pass `--no-open` to run the server without opening a browser. See [Web UI guide](docs/user/guide/index.md).
-
-### Run from source
-
-To run from a repository checkout:
-
-```sh
-git clone https://github.com/deepseek-ai/deepseek-harness.git
+git clone https://github.com/Mempemp/deepseek-harness.git      # ветка 1c/main — по умолчанию
+git clone https://github.com/Mempemp/DSH-1C-deskop-bundle.git
 cd deepseek-harness
-pnpm install
-pnpm run build
-pnpm dsh web
+corepack enable                                                # packageManager: pnpm@11.7.0
+pnpm install --frozen-lockfile
+node apps/desktop/scripts/prepare-1c-catalog.mjs               # каталог из ../DSH-1C-deskop-bundle
+pnpm --dir apps/desktop run package:win:x64:unsigned           # установщик и манифесты фида
 ```
 
-`pnpm run build` prepares the repository artifacts. `pnpm dsh web` uses those built artifacts without rebuilding.
+Готовое лежит в `apps/desktop/.desktop-build/targets/win-x64/unsigned-artifacts/`: установщик,
+`.blockmap` и `dsh1c.yml`.
 
-## Community and support
+Нужны Windows x64, Node.js 24 и Visual Studio Build Tools 2022 с C++. Сборка идёт под TTY: без
+терминала pnpm падает с `stdin is not a tty`. Если каталог лежит в другом месте — задайте путь
+через `DSH_1C_BUNDLE_ROOT`, тогда соседний клон не нужен.
 
-- Submit feedback or bug reports through [GitHub Discussions](https://github.com/deepseek-ai/deepseek-harness/discussions).
-- Add the [`dsh-plugin`](https://github.com/topics/dsh-plugin) topic to your plugin repository for discoverability.
-- Join <a href="https://discord.gg/4MrtZUhpxg">DeepSeek Harness Discord community</a>.
+`apps/desktop/installer-catalog/` в репозиторий не коммитится: он собирается из `installer-flavor.yml`
+и требует сети — плагины качаются из npm, git и из этого же каталога сборки.
 
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md).
-
-## Development
-
-Start with the [development guide](docs/development.md) and [architecture documentation](docs/architecture.md).
-
-`pnpm run dev:web` builds, serves, and rebuilds client bundles on source edits in one terminal, and `make help` lists the matching Make targets for Web and Desktop; the guide's application commands section owns the full table.
-
-For agents, follow [AGENTS.md](AGENTS.md).
-
-## Citation
-
-```bibtex
-@misc{deepseek-harness2026,
-  title={DeepSeek Harness: Everything is a Plugin},
-  author={DeepSeek-AI},
-  year={2026},
-  publisher={GitHub},
-  howpublished={\url{https://github.com/deepseek-ai/deepseek-harness}},
-}
-```
-
-## License
-
-[MIT](LICENSE)
-
-Third-party dependencies and their licenses are disclosed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Замечания по коду — в тот репозиторий, который отвечает за файл: каталог, редакция notifier и
+релизы в `DSH-1C-deskop-bundle`, клиент и установщик — здесь. Лицензия [MIT](LICENSE), как и у
+апстрима; сторонние зависимости перечислены в [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

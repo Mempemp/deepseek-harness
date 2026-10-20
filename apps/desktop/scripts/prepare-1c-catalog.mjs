@@ -35,7 +35,7 @@
  *        seconds, so a long catalog can be built in several bounded runs. Both are no-ops
  *        for a plain run; the state file is removed once every source has been built.
  * Env:   DSH_1C_FLAVOR        explicit flavor file (default: <bundle>/installer-flavor.yml)
- *        DSH_1C_BUNDLE_ROOT   bundle repository root (default: the path below)
+ *        DSH_1C_BUNDLE_ROOT   bundle repository root (default: the checkout next to this repository)
  *        DSH_1C_CATALOG_ROOT  catalog output root (default: apps/desktop)
  */
 
@@ -70,9 +70,20 @@ const appDir = resolve(dirname(scriptPath), '..')
 const repoRoot = resolve(appDir, '..', '..')
 const LOG_PREFIX = '[1c-catalog]'
 
-/** Bundle repository that owns installer-flavor.yml. Override with DSH_1C_BUNDLE_ROOT. */
-const DEFAULT_BUNDLE_ROOT = 'D:/cursor projects/DSH-1C-deskop-bundle'
-const bundleRoot = process.env.DSH_1C_BUNDLE_ROOT?.trim() || DEFAULT_BUNDLE_ROOT
+/**
+ * Bundle repository that owns `installer-flavor.yml`. `DSH_1C_BUNDLE_ROOT` wins; otherwise the
+ * checkout sitting next to this one, which is how the two repositories are cloned for a build.
+ */
+const SIBLING_BUNDLE_DIR = 'DSH-1C-deskop-bundle'
+const bundleRoot = resolveBundleRoot()
+
+/** @returns {string} */
+function resolveBundleRoot() {
+  const explicit = process.env.DSH_1C_BUNDLE_ROOT?.trim()
+  if (explicit) return explicit
+  const sibling = resolve(repoRoot, '..', SIBLING_BUNDLE_DIR)
+  return existsSync(join(sibling, 'installer-flavor.yml')) ? sibling : join(repoRoot, '..', SIBLING_BUNDLE_DIR)
+}
 
 /**
  * @param {...unknown} args
@@ -1475,7 +1486,8 @@ export async function prepareCatalog(options = {}) {
   const paths = catalogOutputPaths(root)
   const flavorPath = resolveFlavorPath({ flavorPath: options.flavorPath, appDir: root })
   if (!existsSync(flavorPath)) {
-    throw new Error(`installer flavor not found: ${flavorPath} (set DSH_1C_FLAVOR or DSH_1C_BUNDLE_ROOT)`)
+    throw new Error(
+      `installer flavor not found: ${flavorPath} (clone DSH-1C-deskop-bundle next to this repository, or set DSH_1C_FLAVOR / DSH_1C_BUNDLE_ROOT)`)
   }
   const flavor = loadInstallerFlavor(flavorPath)
   log(`flavor ${flavorPath} -> ${flavor.name} ${flavor.version}, ${flavor.sources.length} source(s)`)
