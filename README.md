@@ -21,6 +21,7 @@ git clone https://github.com/Mempemp/DSH-1C-deskop-bundle.git
 cd deepseek-harness
 corepack enable                                                # packageManager: pnpm@11.7.0
 pnpm install --frozen-lockfile
+cp apps/desktop/.env.windows.1c apps/desktop/.env.windows      # настройки упаковки, в git не входят
 node apps/desktop/scripts/prepare-1c-catalog.mjs               # каталог из ../DSH-1C-deskop-bundle
 pnpm --dir apps/desktop run package:win:x64:unsigned           # установщик и манифесты фида
 ```
@@ -28,9 +29,11 @@ pnpm --dir apps/desktop run package:win:x64:unsigned           # установ�
 Готовое лежит в `apps/desktop/.desktop-build/targets/win-x64/unsigned-artifacts/`: установщик,
 `.blockmap` и `dsh1c.yml`.
 
-Нужны Windows x64, Node.js 24 и Visual Studio Build Tools 2022 с C++. Сборка идёт под TTY: без
-терминала pnpm падает с `stdin is not a tty`. Если каталог лежит в другом месте — задайте путь
-через `DSH_1C_BUNDLE_ROOT`, тогда соседний клон не нужен.
+Нужны Windows x64, Node.js 24 и Visual Studio Build Tools 2022 с C++. Собирать из PowerShell или
+cmd: в git-bash первым в PATH оказывается GNU `tar`, и упаковка падает на `Cannot connect to D:`
+(Windows-ный `tar.exe` из `System32` такой путь понимает), а шимы `corepack` там же ломаются на
+путях. Сборка идёт под TTY: без терминала pnpm падает с `stdin is not a tty`. Если каталог лежит в
+другом месте — задайте путь через `DSH_1C_BUNDLE_ROOT`, тогда соседний клон не нужен.
 
 `apps/desktop/installer-catalog/` в репозиторий не коммитится: он собирается из `installer-flavor.yml`
 и требует сети — плагины качаются из npm, git и из этого же каталога сборки.
