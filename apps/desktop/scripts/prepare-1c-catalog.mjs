@@ -491,7 +491,7 @@ export function hostCorePackages(root = appDir, monorepo = repoRoot) {
     const manifestPath = join(directory, 'package.json')
     if (existsSync(manifestPath)) {
       try {
-        addName(JSON.parse(readFileSync(manifestPath, 'utf8')).name)
+        addName(parseManifestJson(readFileSync(manifestPath, 'utf8')).name)
       } catch {
         // A malformed workspace manifest is not this script's business to report.
       }
@@ -589,6 +589,16 @@ function winShellArg(value) {
 }
 
 /**
+ * Manifests fetched from third-party git sources may carry a UTF-8 BOM
+ * (dsh-browser-agent@1.0.1 does), and `JSON.parse` rejects the leading U+FEFF.
+ * @param {string} text
+ * @returns {Record<string, unknown>}
+ */
+function parseManifestJson(text) {
+  return JSON.parse(text.charCodeAt(0) === 0xfeff ? text.slice(1) : text)
+}
+
+/**
  * `package.json` straight out of a tarball — no extraction, so a 76 MB archive does
  * not have to be unpacked just to learn its name and version.
  * @param {string} archive
@@ -601,7 +611,7 @@ export function readTarballManifest(archive) {
       maxBuffer: 16 * 1024 * 1024
     })
     if (result.status === 0 && (result.stdout ?? '').trim() !== '') {
-      return JSON.parse(result.stdout)
+      return parseManifestJson(result.stdout)
     }
   }
   throw new Error(`cannot read package.json from ${archive}`)
@@ -641,6 +651,19 @@ export function extractArchive(archive, destination) {
   mkdirSync(destination, { recursive: true })
   const result = spawnSync(tarBinary(), ['-xf', archive, '-C', destination], { encoding: 'utf8' })
   if (result.status !== 0) {
+    // bsdtar on Windows aborts on codeload zips whose entries carry non-ASCII names
+    // with the UTF-8 flag (wingsky-1/dsh-plugin-hub ships docs/*-适配计划.md):
+    // "Archive entry has empty or unreadable filename". Expand-Archive reads them fine.
+    if (process.platform === 'win32' && archive.endsWith('.zip')) {
+      const psLiteral = (value) => `'${value.replaceAll("'", "''")}'`
+      const fallback = spawnSync(
+        'powershell.exe',
+        ['-NoProfile', '-NonInteractive', '-Command', `Expand-Archive -LiteralPath ${psLiteral(archive)} -DestinationPath ${psLiteral(destination)} -Force`],
+        { encoding: 'utf8' }
+      )
+      if (fallback.status === 0) return
+      throw new Error(`tar extract failed for ${archive}: ${(result.stderr || result.stdout || '').trim()}; Expand-Archive fallback failed too: ${(fallback.stderr || fallback.stdout || '').trim()}`)
+    }
     throw new Error(`tar extract failed for ${archive}: ${(result.stderr || result.stdout || '').trim()}`)
   }
 }
@@ -826,7 +849,7 @@ function npmRun(directory, args) {
 export function ensureBundledProductionDependencies(directory) {
   const manifestPath = join(directory, 'package.json')
   const original = readFileSync(manifestPath, 'utf8')
-  const manifest = JSON.parse(original)
+  const manifest = parseManifestJson(original)
   const names = productionDependenciesToBundle(manifest)
   if (names.length === 0) return names
 
@@ -987,7 +1010,7 @@ export function packageEntryPaths(manifest) {
  * @returns {string} the packed tarball
  */
 export function packPluginDirectory(directory, destinationDir) {
-  const manifest = JSON.parse(readFileSync(join(directory, 'package.json'), 'utf8'))
+  const manifest = parseManifestJson(readFileSync(join(directory, 'package.json'), 'utf8'))
   const name = typeof manifest.name === 'string' ? manifest.name : ''
   const version = typeof manifest.version === 'string' ? manifest.version : ''
   const entries = packageEntryPaths(manifest)
@@ -1223,7 +1246,7 @@ function sourceOrigin(source) {
  */
 function pluginManifestGaps(directory, hostNames) {
   try {
-    return hostReferenceGaps(JSON.parse(readFileSync(join(directory, 'package.json'), 'utf8')), hostNames)
+    return hostReferenceGaps(parseManifestJson(readFileSync(join(directory, 'package.json'), 'utf8')), hostNames)
   } catch {
     return []
   }
