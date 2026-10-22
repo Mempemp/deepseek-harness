@@ -34,9 +34,11 @@
  *        in the catalog directory), and --budget stops starting new sources after N
  *        seconds, so a long catalog can be built in several bounded runs. Both are no-ops
  *        for a plain run; the state file is removed once every source has been built.
- * Env:   DSH_1C_FLAVOR        explicit flavor file (default: <bundle>/installer-flavor.yml)
- *        DSH_1C_BUNDLE_ROOT   bundle repository root (default: the checkout next to this repository)
- *        DSH_1C_CATALOG_ROOT  catalog output root (default: apps/desktop)
+ * Env:   DSH_1C_FLAVOR         explicit flavor file (default: <bundle>/installer-flavor.yml)
+ *        DSH_1C_BUNDLE_ROOT    bundle repository root (default: the checkout next to this repository)
+ *        DSH_1C_CATALOG_ROOT   catalog output root (default: apps/desktop)
+ *        DSH_1C_CATALOG_CACHE  download cache directory for pinned git archives
+ *                              (default: %LOCALAPPDATA%/dsh-1c-catalog/downloads)
  */
 
 import { createHash } from 'node:crypto'
@@ -44,6 +46,7 @@ import { spawnSync } from 'node:child_process'
 import { createWriteStream } from 'node:fs'
 import {
   closeSync,
+  copyFileSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -52,11 +55,12 @@ import {
   readFileSync,
   readSync,
   readdirSync,
+  renameSync,
   rmSync,
   statSync,
   writeFileSync
 } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { pipeline } from 'node:stream/promises'
@@ -791,14 +795,67 @@ function firstExtractedDirectory(extractedRoot) {
 }
 
 /**
+ * A pinned commit archive never changes, so one download serves every later run. Tags and
+ * branches are excluded on purpose: a moved tag would hand the next run a stale tree under a
+ * name that still looks authoritative.
+ * @param {string} ref
+ */
+function isCacheableRef(ref) {
+  return /^[0-9a-f]{7,40}$/u.test(ref)
+}
+
+/**
+ * @param {string} [override]
+ */
+export function downloadCacheDir(override) {
+  if (override) return resolve(override)
+  if (process.env.DSH_1C_CATALOG_CACHE) return resolve(process.env.DSH_1C_CATALOG_CACHE)
+  const base = process.env.LOCALAPPDATA || join(homedir(), '.cache')
+  return join(base, 'dsh-1c-catalog', 'downloads')
+}
+
+/**
  * Download `owner/repo#ref` as a codeload zip and return the requested subtree.
- * @param {{ url: string; path?: string; workDir: string; download?: typeof downloadFile }} options
+ *
+ * `dsh-web` is a ~800 MB archive and a release rebuilds the catalog repeatedly, so pinned
+ * archives are kept in a cache directory between runs. An injected `download` (tests) also
+ * disables the cache: those runs exist to exercise the downloader itself.
+ * @param {{ url: string; path?: string; workDir: string; download?: typeof downloadFile; cacheDir?: string | false }} options
  */
 export async function checkoutGitSource(options) {
   const parsed = parseGitSourceUrl(options.url)
   const archive = join(options.workDir, `${safeFileToken(parsed.ownerRepo)}-${safeFileToken(parsed.ref)}.zip`)
   const download = options.download ?? downloadFile
-  await download(parsed.archiveUrl, archive)
+  const cacheable = !options.download && options.cacheDir !== false && isCacheableRef(parsed.ref)
+  // A cache hit copies instead of downloading, so the work directory may not exist yet.
+  mkdirSync(options.workDir, { recursive: true })
+  const cached = cacheable
+    ? join(downloadCacheDir(options.cacheDir || undefined), basename(archive))
+    : ''
+  if (cacheable && existsSync(cached)) {
+    // A truncated cache entry would fail mid-extraction deep inside the pack step; refuse here.
+    try {
+      assertArchiveComplete(cached)
+    } catch (error) {
+      logError(`download cache entry is unusable, downloading again: ${cached}`)
+      rmSync(cached, { force: true })
+    }
+  }
+  if (cacheable && existsSync(cached)) {
+    copyFileSync(cached, archive)
+    log(`download cache hit ${basename(cached)} (${statSync(cached).size} bytes)`)
+  } else {
+    await download(parsed.archiveUrl, archive)
+    if (cacheable) {
+      mkdirSync(dirname(cached), { recursive: true })
+      // Copy through a staging name so an interrupted run cannot leave a half file a later
+      // run would trust.
+      const staging = `${cached}.${process.pid}.partial`
+      copyFileSync(archive, staging)
+      renameSync(staging, cached)
+      log(`download cached ${basename(cached)} (${statSync(cached).size} bytes)`)
+    }
+  }
   const extracted = join(options.workDir, 'extracted')
   extractArchive(archive, extracted)
   const root = firstExtractedDirectory(extracted)
