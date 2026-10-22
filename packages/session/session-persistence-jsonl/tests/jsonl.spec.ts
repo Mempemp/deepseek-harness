@@ -2684,12 +2684,16 @@ describe('JsonlSessionPersistence: edge cases', () => {
       .toThrow(/retired policy baseline fields/)
   })
 
-  it('list rejects a header whose cwd does not identify its physical log', async () => {
+  it('list skips a header whose cwd does not identify its physical log', async () => {
     const m = meta('misplaced', '/stored')
     await writeLog(ctx.sessionPersistence, m, oneTurnLog())
     await rewriteHeader(rawLogPath(root, m.cwd, m.id), (header) => { header.cwd = '/elsewhere' })
+    const kept = meta('kept', '/stored')
+    await writeLog(ctx.sessionPersistence, kept, oneTurnLog())
 
-    await expect(ctx.sessionPersistence.list()).rejects.toThrow(/and cwd identify/)
+    // One stray log — an imported or copied session — must not hide the sessions stored correctly.
+    const ids = (await ctx.sessionPersistence.list()).map(entry => entry.header.id)
+    expect(ids).toEqual(['kept'])
   })
 
   it('accepts an alternate project path only when it identifies the same physical log', async () => {
@@ -2708,7 +2712,7 @@ describe('JsonlSessionPersistence: edge cases', () => {
     expect((await ctx.sessionPersistence.list()).map(s => s.header.id)).toContain(m.id)
   })
 
-  it('list rejects a session header whose id cannot name a storage path', async () => {
+  it('list skips a session header whose id cannot name a storage path', async () => {
     const dir = join(projectDir(root, undefined), 'invalid-id')
     await mkdir(dir, { recursive: true })
     await writeFile(join(dir, generationLogFilename(SESSION_FORMAT_VERSION, 'none')), JSON.stringify({
@@ -2716,10 +2720,11 @@ describe('JsonlSessionPersistence: edge cases', () => {
       isSeeded: false, delegationDepth: 0,
     }) + '\n')
 
-    await expect(ctx.sessionPersistence.list()).rejects.toThrow(/header id cannot name a storage path/)
+    // An unnameable header is corruption for one artifact, not a reason to hide every session.
+    expect(await ctx.sessionPersistence.list()).toEqual([])
   })
 
-  it('open and list reject one id materialized in multiple project directories', async () => {
+  it('open rejects and list tolerates one id materialized in multiple project directories', async () => {
     const id = SessionId('duplicate')
     for (const cwd of ['/a', '/b']) {
       const m = meta(id, cwd)
@@ -2728,8 +2733,9 @@ describe('JsonlSessionPersistence: edge cases', () => {
       await writeFile(rawLogPath(root, cwd, id), content)
     }
 
+    // Resuming an ambiguous id stays an error; listing shows the copy it picked first.
     await expect(ctx.sessionPersistence.open(id, 'read')).rejects.toThrow(/appears in multiple project directories/)
-    await expect(ctx.sessionPersistence.list()).rejects.toThrow(/appears in multiple project directories/)
+    expect((await ctx.sessionPersistence.list()).map(entry => entry.header.id)).toEqual([id])
   })
 
   it('create rejects an id already on disk under a different project directory', async () => {

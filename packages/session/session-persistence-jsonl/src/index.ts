@@ -1158,7 +1158,8 @@ class JsonlSessionPersistence extends SessionPersistence {
       const { selected, metadata } = outcome.value
       if (metadata === undefined) continue
       if (ids.has(metadata.header.id)) {
-        throw new Error(`duplicate JSONL session id "${metadata.header.id}" appears in multiple project directories`)
+        // A stray copy in a second project directory must not hide every other session.
+        continue
       }
       ids.add(metadata.header.id)
       artifacts.push({ ...metadata, path: selected.sourcePath, sourceVersion: selected.sourceVersion })
@@ -1607,7 +1608,10 @@ class JsonlSessionPersistence extends SessionPersistence {
   ): Promise<void> {
     signal?.throwIfAborted()
     if (expectedId !== undefined && meta.id !== expectedId) {
-      throw new Error(`corrupt session log "${path}": requested id "${expectedId}" does not match header id "${meta.id}"`)
+      throw new SessionPersistenceCorruptionError(
+        `corrupt session log "${path}": requested id "${expectedId}" does not match header id "${meta.id}"`,
+        {},
+      )
     }
     let expectedPath: string
     try {
@@ -1619,10 +1623,16 @@ class JsonlSessionPersistence extends SessionPersistence {
         this.compression,
       )
     } catch (error) {
-      throw new Error(`corrupt session log "${path}": header id cannot name a storage path`, { cause: error })
+      throw new SessionPersistenceCorruptionError(
+        `corrupt session log "${path}": header id cannot name a storage path`,
+        { cause: error },
+      )
     }
     if (path !== expectedPath && !await this.sameFile(path, expectedPath, signal)) {
-      throw new Error(`corrupt session log "${path}": header id "${meta.id}" and cwd identify "${expectedPath}"`)
+      throw new SessionPersistenceCorruptionError(
+        `corrupt session log "${path}": header id "${meta.id}" and cwd identify "${expectedPath}"`,
+        {},
+      )
     }
     signal?.throwIfAborted()
   }

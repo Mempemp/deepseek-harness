@@ -3,6 +3,7 @@
 import { createHash } from 'node:crypto'
 import { existsSync, lstatSync, readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
+import { matchesReleaseVersion } from './release-version.ts'
 
 /** Descriptor copied beside every Desktop profile's local core tarballs. */
 export const DESKTOP_PACKAGE_SET_FILE = 'desktop-packages.json'
@@ -86,7 +87,7 @@ export function parseDesktopCorePackageSet(
   for (const name of RELEASE_PACKAGES) {
     const entry = packages.find(candidate => candidate.name === name)
     if (entry === undefined) throw new Error(`desktop package set: missing ${name}`)
-    if (expectedReleaseVersion !== undefined && entry.version !== expectedReleaseVersion) {
+    if (expectedReleaseVersion !== undefined && !matchesReleaseVersion(entry.version, expectedReleaseVersion)) {
       throw new Error(`desktop package set: ${name}@${entry.version} does not match Desktop ${expectedReleaseVersion}`)
     }
   }

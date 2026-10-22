@@ -145,7 +145,7 @@ describe('desktop update coordinator', () => {
       'available', 'downloading', 'downloading', 'verifying', 'ready', 'installing',
     ])
     expect(f.updater).toMatchObject({
-      autoDownload: false, autoInstallOnAppQuit: false, channel: 'nightly',
+      autoDownload: false, autoInstallOnAppQuit: false, channel: 'dsh1c',
       allowPrerelease: true, allowDowngrade: false,
     })
   })
@@ -244,14 +244,15 @@ it.each([new DesktopUpdatePreparationError('stop-failed', 'private diagnostic'),
 })
 
 
-it('keeps a stable-version nightly installation on nightly and rejects prereleases on latest', async () => {
+it('keeps the 1C feed for both packaged channels and rejects prereleases on latest', async () => {
+  // The 1C line ships its own feed file whatever channel the packaged manifest names, so both
+  // fixtures observe `dsh1c`; only the prerelease policy follows the packaged channel.
   const nightly = fixture('nightly', '1.0.0')
-  expect(nightly.updater.channel).toBe('nightly')
+  expect(nightly.updater.channel).toBe('dsh1c')
   expect(nightly.updater.allowPrerelease).toBe(true)
   expect((await nightly.coordinator.check()).phase).toBe('available')
-  expect(nightly.updater.channel).toBe('nightly')
   const latest = fixture('latest', '1.0.0')
-  expect(latest.updater.channel).toBe('latest')
+  expect(latest.updater.channel).toBe('dsh1c')
   expect(latest.updater.allowPrerelease).toBe(false)
   expect(latest.updater.allowDowngrade).toBe(false)
   expect((await latest.coordinator.check()).phase).toBe('error')

@@ -23,6 +23,9 @@ import {
   type MenuItemConstructorOptions,
 } from 'electron'
 import { resolveDesktopPaths } from './paths.ts'
+import { CATALOG_RESOURCES_DIR, seedShippedCatalog } from './catalog-seed.ts'
+import { migrateLegacyHome } from './legacy-migration.ts'
+import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import { DesktopProjectManager } from './project-manager.ts'
 import { DesktopHostFatalError, DesktopHostProcess, DesktopHostUncleanExitError } from './host-process.ts'
 import { DesktopPlatformView, PLATFORM_IPC, platformBounds } from './platform-view.ts'
@@ -572,6 +575,31 @@ async function main(): Promise<void> {
       await navigateMain(applicationUrl)
       await backend.start(async () => {
         await Promise.all([manager.applyRelease(), prepareHostEnvironment()])
+        // Predecessor data (sessions, storages, user content) is carried into this home once,
+        // before the catalog seeds the profile, and the credential store and workspace registry are
+        // reconciled so a configured user keeps their key and their session folders.
+        const legacy = await migrateLegacyHome({
+          legacyDir: join(app.getPath('appData'), 'dsh-desktop', 'harness'),
+          homeDir: resolveDshHome(),
+          note: (message: string) => { console.error(message) },
+        })
+        if (legacy.outcome === 'partial') {
+          console.error(`legacy migration incomplete: ${legacy.detail ?? ''}`)
+        }
+        // The catalog this build ships is installed before the Host starts: the profile exists by now,
+        // and package operations on a running Host would fight it for the profile lock.
+        const seededCatalog = await seedShippedCatalog({
+          catalogDir: join(process.resourcesPath, CATALOG_RESOURCES_DIR),
+          profileDir: paths.profile,
+          homeDir: resolveDshHome(),
+          node: resources.node,
+          pnpm: resources.pnpm,
+          nodeBin: resources.nodeBin,
+          note: (message: string) => { console.error(message) },
+        })
+        if (seededCatalog.outcome === 'partial') {
+          console.error(`catalog seeding incomplete: ${seededCatalog.detail ?? ''}`)
+        }
       })
       if (backend.host !== undefined) await openInitialWindow()
       if (backend.host !== undefined) updateJournal?.action('workspace-ready')

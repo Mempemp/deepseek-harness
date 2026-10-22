@@ -21,6 +21,17 @@ it('verifies a runtime after relocation without depending on build paths', async
   cpSync(join(root, 'dsh'), join(root, 'moved'), { recursive: true })
   expect(await verifyDesktopRuntime(join(root, 'moved'), '1.0.0')).toEqual(before)
 })
+it('accepts a sub-release product version over the bundled core version', () => {
+  const dsh = join(fixture(), 'dsh')
+  const path = join(dsh, DESKTOP_RUNTIME_FILE)
+  const descriptor = JSON.parse(readFileSync(path, 'utf8')) as { release: { version: string } }
+  descriptor.release.version = '1.0.0-2'
+  writeFileSync(path, JSON.stringify(descriptor))
+  expect(readDesktopRuntime(dsh).release.version).toBe('1.0.0-2')
+  descriptor.release.version = '1.0.0-2x'
+  writeFileSync(path, JSON.stringify(descriptor))
+  expect(() => readDesktopRuntime(dsh)).toThrow(/missing or mismatched/u)
+})
 it.each(['changed', 'same-size', 'extra', 'missing'])('checks %s runtime bytes only during build verification', async (operation) => {
   const dsh = join(fixture(), 'dsh')
   const before = readDesktopRuntime(dsh)
