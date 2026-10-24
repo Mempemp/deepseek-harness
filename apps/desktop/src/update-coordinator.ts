@@ -47,6 +47,7 @@ export class DesktopUpdateCoordinator {
    * @param currentVersion - Actual installed application version.
    * @param channel - Installed package channel; omitted test/local callers retain nightly.
    * @param downloadResult - Once per completed download attempt, including platform preparation failures.
+   * @param skipped - Versions the user rolled back from, which unattended checks must not offer again.
    */
   constructor(
     private readonly publish: (state: DesktopUpdateState) => DesktopUpdateState,
@@ -56,6 +57,7 @@ export class DesktopUpdateCoordinator {
     private readonly currentVersion: () => string = () => app.getVersion(),
     private readonly downloadResult?: (success: boolean, reason?: string) => void,
     private readonly channel: 'nightly' | 'latest' = 'nightly',
+    private readonly skipped?: (version: string) => boolean,
   ) {
     if (updater === autoUpdater) {
       // electron-updater omits this internal transport property from its public declarations.
@@ -195,7 +197,9 @@ export class DesktopUpdateCoordinator {
       const version = result.updateInfo.version
       if (valid(version) === null) throw new Error('desktop update: feed version is invalid')
       if (this.channel === 'latest' && version.includes('-')) throw new Error('desktop update: latest feed contains a prerelease')
-      this.candidate = result.isUpdateAvailable && gt(version, this.currentVersion()) ? version : undefined
+      this.candidate = result.isUpdateAvailable && gt(version, this.currentVersion()) && !(this.skipped?.(version) ?? false)
+        ? version
+        : undefined
       return this.setState(this.candidate === undefined ? { phase: 'idle' } : { phase: 'available', version })
     } catch (error) {
       return this.failure(error, 'check')

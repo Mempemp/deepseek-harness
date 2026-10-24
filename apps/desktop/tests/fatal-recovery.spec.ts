@@ -239,3 +239,62 @@ it('writes the report once for the first fatal failure and not for the recovery-
   expect(operations.writeReport).toHaveBeenCalledOnce()
   expect(operations.show.mock.calls[1]![0].detail).toContain(REPORT_PATH)
 })
+
+it.each(['en', 'ru-RU'])('offers the archived release as a fourth choice in %s', async (locale) => {
+  const { operations, choice, stopped } = fixture(locale)
+  const rollback = vi.fn(async () => {})
+  const recovery = new DesktopFatalRecovery({
+    ...operations,
+    rollbackVersion: () => '0.2.0-rc.2-2',
+    rollback,
+  })
+  const pending = recovery.report(new Error('Plugin initialization failed'), 'host')
+  await shown(operations)
+  const options = operations.show.mock.calls[0]![0]
+  expect(options.buttons).toEqual([
+    operations.messages().exitApplication,
+    operations.messages().restartApplication,
+    operations.messages().disableThirdPartyPlugins,
+    operations.messages().recoveryRollback.replace('{version}', '0.2.0-rc.2-2'),
+  ])
+  choice.resolve({ response: 3, checkboxChecked: false })
+  stopped.resolve(undefined)
+  await pending
+  expect(rollback).toHaveBeenCalledOnce()
+  // The installer ends this process; the shell must not also restart or disable anything.
+  expect(operations.restart).not.toHaveBeenCalled()
+  expect(operations.exit).not.toHaveBeenCalled()
+  expect(operations.disablePlugins).not.toHaveBeenCalled()
+})
+
+it('keeps a listener conflict at two choices, where a rollback cannot help', async () => {
+  const { operations, choice, stopped } = fixture('en')
+  const recovery = new DesktopFatalRecovery({
+    ...operations,
+    rollbackVersion: () => '0.2.0-rc.2-2',
+    rollback: vi.fn(async () => {}),
+  })
+  const pending = recovery.report(new Error('listen EADDRINUSE: address already in use'), 'host')
+  await shown(operations)
+  expect(operations.show.mock.calls[0]![0].buttons).toHaveLength(2)
+  choice.resolve({ response: 0, checkboxChecked: false })
+  stopped.resolve(undefined)
+  await pending
+})
+
+it('reports a rollback handoff failure and offers the choices again', async () => {
+  vi.spyOn(console, 'error').mockImplementation(() => {})
+  const { operations, stopped } = fixture('en')
+  const recovery = new DesktopFatalRecovery({
+    ...operations,
+    rollbackVersion: () => '0.2.0-rc.2-2',
+    rollback: vi.fn(async () => { throw new Error('installer is missing') }),
+  })
+  operations.show.mockResolvedValueOnce({ response: 3, checkboxChecked: false })
+    .mockResolvedValueOnce({ response: 0, checkboxChecked: false })
+  stopped.resolve(undefined)
+  await recovery.report(new Error('fatal'), 'host')
+  expect(operations.show).toHaveBeenCalledTimes(2)
+  expect(operations.show.mock.calls[1]![0].detail).toContain('installer is missing')
+  expect(operations.exit).toHaveBeenCalledOnce()
+})

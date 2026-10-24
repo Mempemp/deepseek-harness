@@ -14,6 +14,13 @@ interface RecoveryOperations {
   restart(): void
   /** Persist the complete diagnostic; resolves with the file path, or `undefined` when nothing was written. */
   writeReport(error: unknown, source: CrashReportSource): Promise<string | undefined>
+  /**
+   * Release the user can return to, when its installer is archived on this computer.
+   * Absent (or resolving to `undefined`) hides the rollback choice entirely.
+   */
+  rollbackVersion?: () => string | undefined
+  /** Run the archived installer of {@link rollbackVersion}; resolves once the handoff has started. */
+  rollback?: () => Promise<void>
 }
 
 /** Upper bound on waiting for the crash report before the dialog opens. */
@@ -71,6 +78,15 @@ export class DesktopFatalRecovery {
     let message = messages.fatalSummary
     for (;;) {
       const addressInUse = /\blisten EADDRINUSE\b/u.test(detail)
+      const rollbackVersion = addressInUse ? undefined : this.operations.rollbackVersion?.()
+      const buttons = addressInUse
+        ? [messages.exitApplication, messages.restartApplication]
+        : rollbackVersion === undefined
+          ? [messages.exitApplication, messages.restartApplication, messages.disableThirdPartyPlugins]
+          : [
+            messages.exitApplication, messages.restartApplication, messages.disableThirdPartyPlugins,
+            formatDesktopMessage(messages.recoveryRollback, { version: rollbackVersion }),
+          ]
       const { response } = await this.operations.show({
         type: 'error',
         title: messages.startupFailed,
@@ -78,9 +94,7 @@ export class DesktopFatalRecovery {
         detail: addressInUse
           ? `${messages.startupAddressInUse}${reportLine(messages, reportPath)}`
           : dialogDetail(detail, messages, reportPath),
-        buttons: addressInUse
-          ? [messages.exitApplication, messages.restartApplication]
-          : [messages.exitApplication, messages.restartApplication, messages.disableThirdPartyPlugins],
+        buttons,
         defaultId: 1,
         cancelId: 0,
         noLink: true,
@@ -93,6 +107,11 @@ export class DesktopFatalRecovery {
       try {
         await this.operations.stop()
         if (response === 2) await this.operations.disablePlugins()
+        // The rollback hands the application to another installer, which ends this process itself.
+        if (response === 3 && rollbackVersion !== undefined) {
+          await this.operations.rollback?.()
+          return
+        }
         this.operations.restart()
         return
       } catch (failure) {

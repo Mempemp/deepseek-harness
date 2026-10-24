@@ -3,6 +3,7 @@ import { WINDOWS_TITLEBAR_HEIGHT } from './windows-layout.ts'
 /** Electron shell: desktop project ownership, custom protocol, windows, and lifecycle. */
 
 import { readFile, writeFile } from 'node:fs/promises'
+import { spawn } from 'node:child_process'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
@@ -22,7 +23,7 @@ import {
   type IpcMainInvokeEvent,
   type MenuItemConstructorOptions,
 } from 'electron'
-import { resolveDesktopPaths } from './paths.ts'
+import { resolveDesktopPaths, resolveDesktopRecoveryPaths } from './paths.ts'
 import { CATALOG_RESOURCES_DIR, seedShippedCatalog } from './catalog-seed.ts'
 import { migrateLegacyHome } from './legacy-migration.ts'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
@@ -64,9 +65,23 @@ import { DesktopUpdateOverlays } from './update-overlay.ts'
 import { DesktopQuitConfirmation } from './quit-confirmation.ts'
 import { DesktopTray } from './tray.ts'
 import { DesktopBackgroundNotice } from './background-notice.ts'
+import {
+  createDataSnapshot, pruneDataSnapshots, readDataSnapshots, restoreDataSnapshot, type DataSnapshotManifest,
+} from './data-snapshot.ts'
+import {
+  archiveInstaller, listArchivedInstallers, pruneArchivedInstallers, readUpdaterCacheDirName, selectRollbackInstaller,
+  type ArchivedInstaller,
+} from './release-archive.ts'
+import {
+  beginBoot, clearSkip, isSkipped, readUpdateGuard, reachReady, shouldOfferRollback, skipRelease, writeUpdateGuard,
+} from './update-guard.ts'
 
 let focusPrimaryWindow = (): void => {}
 let stopForRecovery = async (): Promise<void> => {}
+/** Release the recovery dialog may offer, once this process has learned what is archived. */
+let availableRollbackVersion = (): string | undefined => undefined
+/** Hand the application to the archived installer of the previous release. */
+let runReleaseRollback = async (): Promise<void> => {}
 let shuttingDown = false
 /**
  * Set by quit entries that must not ask: crash recovery exit and restart, and the
@@ -107,6 +122,10 @@ const recovery = new DesktopFatalRecovery({
   exit: () => { quitWithoutConfirmation() },
   restart: () => { app.relaunch(); quitWithoutConfirmation() },
   writeReport: (error, source) => persistCrashReport(error, source),
+  // Offered only after the release has failed to start twice, so a first crash keeps its ordinary
+  // recovery choices and the user is not talked into moving backwards over one bad launch.
+  rollbackVersion: () => availableRollbackVersion(),
+  rollback: () => runReleaseRollback(),
 })
 
 function persistCrashReport(error: unknown, source: CrashReportSource): Promise<string | undefined> {
@@ -320,6 +339,35 @@ function createWindow(preload: string, show = false, primary = false): BrowserWi
 async function main(): Promise<void> {
   const desktopSettings = readDesktopSettings(app.getPath('userData'))
   void pruneCrashReports(app.getPath('logs'))
+  // The updater derives its cache directory from the packaged update configuration, so the archive
+  // reads the same field instead of guessing at `<app name>-updater`.
+  const updaterCacheDirName = app.isPackaged ? readUpdaterCacheDirName(join(process.resourcesPath, 'app-update.yml')) : undefined
+  const recoveryPaths = resolveDesktopRecoveryPaths({
+    userData: app.getPath('userData'),
+    platform: process.platform,
+    home: app.getPath('home'),
+    ...(process.env.LOCALAPPDATA === undefined ? {} : { localAppData: process.env.LOCALAPPDATA }),
+    ...(updaterCacheDirName === undefined ? {} : { updaterCacheDirName }),
+  })
+  // This start is one more attempt of the installed release: the counter only clears when a window
+  // becomes usable, and it is what decides whether the recovery dialog may offer a rollback.
+  let updateGuard = beginBoot(readUpdateGuard(recoveryPaths.guard), app.getVersion())
+  const persistGuard = (): void => {
+    void writeUpdateGuard(recoveryPaths.guard, updateGuard)
+      .catch((error: unknown) => { console.error('desktop recovery: update history could not be written', error) })
+  }
+  persistGuard()
+  let rollbackTarget: ArchivedInstaller | undefined
+  // The recovery dialog asks this synchronously; the archive listing below fills the answer.
+  availableRollbackVersion = () => shouldOfferRollback(updateGuard) ? rollbackTarget?.version : undefined
+  const formatBytes = (bytes: number): string => {
+    if (bytes < 1024) return `${String(bytes)} B`
+    const units = ['KB', 'MB', 'GB']
+    let value = bytes / 1024
+    let unit = 0
+    while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit += 1 }
+    return `${value < 10 ? value.toFixed(1) : String(Math.round(value))} ${units[unit] ?? 'GB'}`
+  }
   const journalDirectory = process.env.DSH_DESKTOP_UPDATE_JOURNAL_DIR
   const updateJournal = journalDirectory === undefined ? undefined : new DesktopUpdateJournal(journalDirectory, app.getVersion())
   const resources = runtimeResources()
@@ -384,6 +432,195 @@ async function main(): Promise<void> {
       return await updateDialog.show(parent, { ...options, signal: controller.signal })
     }
     finally { ordinaryDialogs.delete(controller) }
+  }
+
+  /** Snapshots offered in the restore chooser; the menu must stay readable as a native dialog. */
+  const SNAPSHOT_CHOICES = 3
+
+  /**
+   * Hand the application to an installer that rewrites the files this process has mapped.
+   * NSIS cannot replace a running installation, so a detached shell waits for this process to
+   * disappear and only then starts the installer — no second executable has to ship for that.
+   */
+  const handOffToInstaller = (installer: string): void => {
+    const command = process.platform === 'win32'
+      ? { file: process.env.ComSpec ?? 'cmd.exe', args: ['/c', `ping -n 3 127.0.0.1 >nul & start "" "${installer}"`] }
+      : { file: '/bin/sh', args: ['-c', `sleep 2; open "${installer}"`] }
+    spawn(command.file, command.args, { detached: true, stdio: 'ignore', windowsHide: true }).unref()
+  }
+
+  const rollbackToArchivedRelease = (): void => {
+    const target = rollbackTarget
+    if (target === undefined) throw new Error(locale.messages.rollbackMissing)
+    // Skipping the release being left is what stops the updater from reinstalling it a minute later.
+    updateGuard = skipRelease(updateGuard, app.getVersion(), target.version)
+    persistGuard()
+    handOffToInstaller(target.path)
+    quitting = true
+    quitWithoutConfirmation()
+  }
+  runReleaseRollback = () => { rollbackToArchivedRelease(); return Promise.resolve() }
+
+  const confirmRollback = async (): Promise<void> => {
+    const target = rollbackTarget
+    if (target === undefined) {
+      await ordinaryMessageBox({ type: 'info', title: locale.messages.updateTitle, message: locale.messages.rollbackMissing })
+      return
+    }
+    const { response } = await ordinaryMessageBox({
+      type: 'warning',
+      title: formatDesktopMessage(locale.messages.rollbackTitle, { version: target.version }),
+      message: formatDesktopMessage(locale.messages.rollbackDetail, { version: target.version }),
+      buttons: [locale.messages.continueAction, locale.messages.cancel],
+      defaultId: 1,
+      cancelId: 1,
+    })
+    if (response !== 0) return
+    try {
+      rollbackToArchivedRelease()
+    } catch (error) {
+      await ordinaryMessageBox({
+        type: 'error',
+        title: locale.messages.updateTitle,
+        message: formatDesktopMessage(locale.messages.rollbackFailed, {
+          message: error instanceof Error ? error.message : String(error),
+        }),
+      })
+    }
+  }
+
+  const restoreSnapshot = async (manifest: DataSnapshotManifest): Promise<void> => {
+    const home = resolveDshHome()
+    await startup?.catch(() => undefined)
+    try {
+      await backend.stop()
+    } catch (error) {
+      // A Host that refuses to stop must not block the restore: it is the broken state being replaced.
+      console.error('desktop recovery: backend stop before restore failed', error)
+    }
+    // Capture the state being replaced, so a restore the user regrets is itself reversible. Taken
+    // after the Host stopped, so nothing is appending to a session log while it is copied.
+    const safety = await createDataSnapshot({ home, root: recoveryPaths.snapshots, appVersion: app.getVersion(), reason: 'restore' })
+    if (safety.outcome === 'created') {
+      void pruneDataSnapshots(recoveryPaths.snapshots).catch((error: unknown) => { console.error(error) })
+    } else {
+      console.error('desktop recovery: pre-restore snapshot was not created', safety.outcome, safety.message)
+    }
+    const result = await restoreDataSnapshot(join(recoveryPaths.snapshots, manifest.id), home)
+    if (result.failed.length > 0) {
+      await ordinaryMessageBox({
+        type: 'error',
+        title: locale.messages.snapshotRestoreMenu,
+        message: formatDesktopMessage(locale.messages.snapshotRestoreFailed, { message: String(result.failed.length) }),
+      })
+    } else {
+      await ordinaryMessageBox({
+        type: 'info',
+        title: locale.messages.snapshotRestoreMenu,
+        message: formatDesktopMessage(locale.messages.snapshotRestoreDone, { files: String(result.files) }),
+      })
+    }
+    app.relaunch()
+    quitWithoutConfirmation()
+  }
+
+  const chooseSnapshot = async (): Promise<void> => {
+    const manifests = await readDataSnapshots(recoveryPaths.snapshots).catch(() => [])
+    if (manifests.length === 0) {
+      await ordinaryMessageBox({ type: 'info', title: locale.messages.snapshotRestoreMenu, message: locale.messages.snapshotNone })
+      return
+    }
+    const offered = manifests.slice(0, SNAPSHOT_CHOICES)
+    const { response } = await ordinaryMessageBox({
+      type: 'question',
+      title: locale.messages.snapshotRestoreMenu,
+      message: locale.messages.snapshotRestoreMenu,
+      buttons: [
+        ...offered.map(manifest => `${new Date(manifest.createdAt).toLocaleString(locale.id)} · ${manifest.appVersion}`),
+        locale.messages.cancel,
+      ],
+      defaultId: 0,
+      cancelId: offered.length,
+    })
+    const chosen = offered[response]
+    if (chosen === undefined) return
+    const { response: confirmed } = await ordinaryMessageBox({
+      type: 'warning',
+      title: formatDesktopMessage(locale.messages.snapshotRestoreTitle, {
+        time: new Date(chosen.createdAt).toLocaleString(locale.id),
+      }),
+      message: formatDesktopMessage(locale.messages.snapshotRestoreDetail, {
+        files: String(chosen.totals.files), size: formatBytes(chosen.totals.bytes), version: chosen.appVersion,
+      }),
+      buttons: [locale.messages.continueAction, locale.messages.cancel],
+      defaultId: 1,
+      cancelId: 1,
+    })
+    if (confirmed !== 0) return
+    await restoreSnapshot(chosen)
+  }
+
+  /** Entries the tray offers next to Open and Quit; empty when nothing was captured yet. */
+  const recoveryMenuItems = (): MenuItemConstructorOptions[] => {
+    const items: MenuItemConstructorOptions[] = []
+    const target = rollbackTarget
+    if (target !== undefined) {
+      items.push({
+        label: formatDesktopMessage(locale.messages.rollbackMenu, { version: target.version }),
+        click: () => { void confirmRollback() },
+      })
+    }
+    items.push({ label: locale.messages.snapshotRestoreMenu, click: () => { void chooseSnapshot() } })
+    return items
+  }
+
+  /**
+   * Keep the installer of the release that is running, so a later update can be undone without a
+   * download: `electron-updater` keeps only the installer it is about to run, and deletes it after.
+   * The archived copy is linked, not copied, so it costs a directory entry.
+   */
+  const rememberReleaseInstaller = async (): Promise<void> => {
+    const cacheDirectory = recoveryPaths.updaterCache
+    if (cacheDirectory !== undefined) {
+      const archived = await archiveInstaller({ cacheDirectory, archiveDirectory: recoveryPaths.installers, version: app.getVersion() })
+      if (archived.outcome === 'failed') console.error('desktop recovery: installer could not be archived', archived.message)
+      await pruneArchivedInstallers(recoveryPaths.installers).catch((error: unknown) => { console.error(error) })
+    }
+    rollbackTarget = selectRollbackInstaller(
+      // The release the user rolled back from is not a rollback target: offering it again would
+      // bounce them straight back into the failure they just left.
+      (await listArchivedInstallers(recoveryPaths.installers)).filter(installer => installer.version !== updateGuard.skippedVersion),
+      app.getVersion(),
+    )
+    tray?.relabel()
+  }
+
+  /** A usable window: the release counts as good, and its installer becomes the next rollback target. */
+  const markWorkspaceReady = (): void => {
+    updateJournal?.action('workspace-ready')
+    updateGuard = reachReady(updateGuard, app.getVersion())
+    persistGuard()
+    void rememberReleaseInstaller()
+  }
+
+  /**
+   * Capture the data the next release will migrate.
+   * A failure never blocks the update: the user asked for the update, and refusing to install
+   * because a copy could not be written is worse than installing without one. It is logged loudly.
+   */
+  const capturePreUpdateData = async (): Promise<void> => {
+    const snapshot = await createDataSnapshot({
+      home: resolveDshHome(), root: recoveryPaths.snapshots, appVersion: app.getVersion(), reason: 'update',
+    })
+    if (snapshot.outcome !== 'created') {
+      console.error('desktop recovery: pre-update snapshot was not created', snapshot.outcome, snapshot.message)
+      return
+    }
+    console.info('desktop recovery: pre-update snapshot', {
+      id: snapshot.manifest?.id, files: snapshot.manifest?.totals.files,
+      bytes: snapshot.manifest?.totals.bytes, stored: snapshot.manifest?.totals.storedBytes,
+    })
+    await pruneDataSnapshots(recoveryPaths.snapshots).catch((error: unknown) => { console.error(error) })
   }
   // Copy comes from the same locale as the update prompts so the dialog
   // chrome and its content never mix languages.
@@ -551,7 +788,7 @@ async function main(): Promise<void> {
           // A replacement Host can have a new port, cookie, or boot injections even at the same URL.
           navigation = undefined
           await navigateMain(applicationUrl)
-          if (backend.host !== undefined) updateJournal?.action('workspace-ready')
+          if (backend.host !== undefined) markWorkspaceReady()
         })
         workspaceRecovery = recovery
         void recovery.catch((error: unknown) => { reportFatal(error, 'main') }).finally(() => {
@@ -602,7 +839,7 @@ async function main(): Promise<void> {
         }
       })
       if (backend.host !== undefined) await openInitialWindow()
-      if (backend.host !== undefined) updateJournal?.action('workspace-ready')
+      if (backend.host !== undefined) markWorkspaceReady()
       // The existing Web document resumes through the boot IPC response.
     })().catch((error: unknown) => {
       updateJournal?.action('workspace-failed')
@@ -655,6 +892,9 @@ async function main(): Promise<void> {
         // The backend's async cleanup callback can assign this after the reset above.
         const stopFailure = updateStopFailure as DesktopHostUncleanExitError | undefined
         if (stopFailure !== undefined) throw new DesktopUpdatePreparationError('stop-failed', locale.messages.updateStopFailed, stopFailure.message)
+        // The Host has stopped, so nothing is appending to a session log: the last moment a snapshot
+        // describes exactly the data the next release is about to migrate.
+        await capturePreUpdateData()
         updateJournal?.action('install-confirmed')
         shellInstallerOwnsQuit = true
       } catch (error) {
@@ -668,6 +908,7 @@ async function main(): Promise<void> {
     undefined, undefined, undefined,
     (success, reason) => { void track('desktop_upgrade_download_result', { is_success: success, ...reason === undefined ? {} : { error_reason: reason } }) },
     updateChannel,
+    (version: string) => isSkipped(updateGuard, version),
   )
 
   const updateSchedule = new DesktopUpdateSchedule(updates, resolveDesktopUpdateScheduleConfig(process.env))
@@ -834,6 +1075,12 @@ async function main(): Promise<void> {
     let failedOperation: 'check' | 'download' | 'install' = 'check'
     promptOperation ??= Promise.resolve().then(async () => {
       if (manual) updateJournal?.action('check-requested')
+      if (manual) {
+        // An explicit check is a request to see everything the feed offers, including the release
+        // the user rolled back from; unattended checks keep honouring the skip.
+        updateGuard = clearSkip(updateGuard)
+        persistGuard()
+      }
       const joinedPolicyAuthentication = authenticationOperation !== undefined
       if (joinedPolicyAuthentication) await authenticatePolicy()
       if (isMandatory()) {
@@ -1021,8 +1268,13 @@ async function main(): Promise<void> {
     // The tray is the way back to a hidden window; without it, relaunching the application still focuses it.
     try {
       tray = new DesktopTray({ iconPath: trayIconPath, locale: currentDesktopLocale,
-        open: () => { focusPrimaryWindow() }, quit: () => { app.quit() } })
+        open: () => { focusPrimaryWindow() }, quit: () => { app.quit() },
+        extras: () => recoveryMenuItems() })
     } catch (error) { console.warn('desktop tray: unavailable', error) }
+    // A release that never reaches a window still has to know what it could return to.
+    void rememberReleaseInstaller().catch((error: unknown) => {
+      console.error('desktop recovery: archived installers could not be listed', error)
+    })
   }
   const backgroundNotice = process.platform === 'win32'
     ? new DesktopBackgroundNotice({ markerPath: join(app.getPath('userData'), 'background-close-confirmed'),

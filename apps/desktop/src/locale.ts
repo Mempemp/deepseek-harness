@@ -166,6 +166,19 @@ export const en = {
   mandatoryCopyFailed: 'Could not copy the link. Select and copy it below.',
   mandatoryAddress: 'Download link',
   mandatoryNotification: 'Return to the application to confirm installation and restart.',
+  recoveryRollback: 'Roll back to version {version}',
+  rollbackMenu: 'Roll back to version {version}…',
+  rollbackTitle: 'Roll back to version {version}?',
+  rollbackDetail: 'The installer of version {version} will run. Sessions, settings, and keys stay where they are, and the current version remains the one you can update from later. The application closes while the installer works.',
+  rollbackMissing: 'The installer of the previous version is not kept on this computer. Download it from the release page and install it over the current version.',
+  rollbackFailed: 'The installer of the previous version could not be started: {message}',
+  snapshotRestoreMenu: 'Restore data from a snapshot…',
+  snapshotNone: 'No data snapshots yet. A snapshot is captured before every update.',
+  snapshotRestoreTitle: 'Restore the snapshot from {time}?',
+  snapshotRestoreDetail: '{files} files ({size}) captured before updating to version {version}. Files created since then are kept. The application will close and reopen.',
+  snapshotRestoreDone: 'Restored {files} files. The application will now restart.',
+  snapshotRestoreFailed: 'The snapshot could not be restored: {message}',
+  continueAction: 'Continue',
 } as const
 
 /** Every Desktop locale supplies the complete English key set. */
@@ -337,6 +350,19 @@ export const zh = {
   mandatoryCopyFailed: '复制失败，请手动选择并复制下方链接。',
   mandatoryAddress: '下载链接',
   mandatoryNotification: '返回应用确认安装并重启。',
+  recoveryRollback: '回退到版本 {version}',
+  rollbackMenu: '回退到版本 {version}…',
+  rollbackTitle: '回退到版本 {version}？',
+  rollbackDetail: '将运行版本 {version} 的安装程序。会话、设置和密钥保持原样，当前版本仍是之后可更新的版本。安装期间应用会关闭。',
+  rollbackMissing: '此计算机上没有保留上一版本的安装程序。请从发布页面下载，并在当前版本之上安装。',
+  rollbackFailed: '无法启动上一版本的安装程序：{message}',
+  snapshotRestoreMenu: '从快照恢复数据…',
+  snapshotNone: '还没有数据快照。每次更新前会自动创建快照。',
+  snapshotRestoreTitle: '恢复 {time} 的快照？',
+  snapshotRestoreDetail: '更新到版本 {version} 之前捕获的 {files} 个文件（{size}）。此后创建的文件会保留。应用将关闭并重新打开。',
+  snapshotRestoreDone: '已恢复 {files} 个文件。应用即将重启。',
+  snapshotRestoreFailed: '无法恢复快照：{message}',
+  continueAction: '继续',
 } as const satisfies DesktopMessages
 
 export const ru = {
@@ -505,6 +531,19 @@ export const ru = {
   mandatoryCopyFailed: 'Не удалось скопировать ссылку. Выделите и скопируйте её ниже.',
   mandatoryAddress: 'Ссылка для скачивания',
   mandatoryNotification: 'Вернитесь в приложение, чтобы подтвердить установку и перезапуск.',
+  recoveryRollback: 'Вернуться на версию {version}',
+  rollbackMenu: 'Вернуться на версию {version}…',
+  rollbackTitle: 'Вернуться на версию {version}?',
+  rollbackDetail: 'Будет запущен установщик версии {version}. Сессии, настройки и ключи останутся на месте, а текущая версия останется той, с которой можно будет обновиться позже. Пока установщик работает, приложение закрыто.',
+  rollbackMissing: 'Установщик прошлой версии не сохранён на этом компьютере. Скачайте его со страницы выпусков и установите поверх текущей версии.',
+  rollbackFailed: 'Не удалось запустить установщик прошлой версии: {message}',
+  snapshotRestoreMenu: 'Восстановить данные из копии…',
+  snapshotNone: 'Копий данных пока нет. Копия создаётся перед каждым обновлением.',
+  snapshotRestoreTitle: 'Восстановить копию от {time}?',
+  snapshotRestoreDetail: 'Файлов: {files} ({size}), сняты перед обновлением до версии {version}. Файлы, созданные позже, сохранятся. Приложение закроется и откроется заново.',
+  snapshotRestoreDone: 'Восстановлено файлов: {files}. Приложение сейчас перезапустится.',
+  snapshotRestoreFailed: 'Не удалось восстановить копию: {message}',
+  continueAction: 'Продолжить',
 } as const satisfies DesktopMessages
 
 /** Locale payload exposed to the Desktop-owned renderer. */
