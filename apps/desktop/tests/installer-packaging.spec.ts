@@ -80,7 +80,8 @@ describe('installer preparation preserves application dependencies', () => {
       DSH_DESKTOP_TARGET_ARCH: 'x64',
       DSH_DESKTOP_UNSIGNED: '1',
     }, 'win32', 'x64')
-    expect(config.artifactName).toBe('DSH-1C-Setup-${version}-${os}-${arch}-unsigned.${ext}')
+    const { createDesktopArtifactName } = await import('../scripts/electron-builder-config.mjs')
+    expect(config.artifactName).toBe(createDesktopArtifactName('-unsigned'))
   })
 
   it('ships the 1C catalog from the directory beside the configuration', async () => {
