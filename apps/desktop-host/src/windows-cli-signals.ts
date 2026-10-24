@@ -16,6 +16,15 @@ export async function installWindowsCliSignals(): Promise<void> {
     return 0
   }, koffi.pointer(type))
   const install = kernel.func('int __stdcall SetConsoleCtrlHandler(DshCliConsoleHandler *handler, int add)')
+  // Electron's Node mode starts as a process that ignores CTRL_C, and Windows then delivers no
+  // CTRL_C events to it at all — a handler added afterwards is simply never called, while
+  // CTRL_BREAK still arrives. The ignore flag belongs to the process, not to the handler list, so
+  // delivery has to be re-enabled before this handler can see an interrupt.
+  const restoreInterrupts = kernel.func('int __stdcall SetConsoleCtrlHandler(void *handler, int add)')
+  if (!restoreInterrupts(null, 0)) {
+    koffi.unregister(handler)
+    throw new Error('desktop CLI: cannot re-enable the Windows console interrupts')
+  }
   if (!install(handler, 1)) {
     koffi.unregister(handler)
     throw new Error('desktop CLI: cannot register the Windows console handler')
