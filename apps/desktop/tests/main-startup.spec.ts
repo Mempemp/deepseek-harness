@@ -410,7 +410,10 @@ beforeEach(() => {
   vi.useFakeTimers()
   harness.reset()
   const userData = mkdtempSync(join(tmpdir(), 'dsh-main-user-data-'))
-  onTestFinished(() => { rmSync(userData, { recursive: true, force: true }) })
+  // Windows reports ENOTEMPTY when a directory is removed while a handle inside it is still being
+  // written: bookkeeping started by the shell during boot (the update history) finishes after the
+  // test body, so the removal retries instead of racing it.
+  onTestFinished(() => { rmSync(userData, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) })
   harness.app.getPath.mockImplementation(name => name === 'userData' ? userData : `desktop-test-${name}`)
   harness.dialog.showMessageBox.mockImplementation((options: { title?: string }) => {
     if (options.title !== en.startupFailed) return Promise.resolve({ response: 1 })
