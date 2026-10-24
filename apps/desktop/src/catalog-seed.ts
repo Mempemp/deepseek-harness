@@ -140,7 +140,7 @@ function writeAtomic(path: string, contents: string): void {
 }
 
 /** Run the bundled package manager in the profile with the bounded output startup can hold. */
-async function runPackageManager(options: CatalogSeedOptions, specs: readonly string[]): Promise<void> {
+async function runPackageManager(options: CatalogSeedOptions, specs: readonly string[], action: 'add' | 'remove' = 'add'): Promise<void> {
   const environment: NodeJS.ProcessEnv = {
     ...process.env,
     ELECTRON_RUN_AS_NODE: '1',
@@ -148,7 +148,7 @@ async function runPackageManager(options: CatalogSeedOptions, specs: readonly st
     PATH: `${options.nodeBin}${delimiter}${process.env.PATH ?? ''}`,
   }
   await new Promise<void>((resolve, reject) => {
-    const child = spawn(options.node, [options.pnpm, 'add', '--reporter=append-only', ...specs], {
+    const child = spawn(options.node, [options.pnpm, action, '--reporter=append-only', ...specs], {
       cwd: options.profileDir, env: environment, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
     })
     let output = ''
@@ -160,36 +160,101 @@ async function runPackageManager(options: CatalogSeedOptions, specs: readonly st
     child.on('error', reject)
     child.on('close', (code) => {
       if (code === 0) resolve()
-      else reject(new Error(`catalog package manager exited with ${String(code)}: ${output.trim()}`))
+      else reject(new Error(`catalog package manager ${action} exited with ${String(code)}: ${output.trim()}`))
     })
   })
 }
 
 /**
- * Add every installed catalog package that declares a bundle layer to the profile's selection.
- * The package manager installs dependencies; selecting the layers they contribute is the caller's.
+ * Catalog-owned package names recorded by the previous seeding run.
+ *
+ * The catalog stops shipping plugins over time: `dsh-rlm-tools-bsl` is the real case, its engine
+ * moved inside `dsh-1c-project-properties`. Without this record the retired package stays in the
+ * profile and keeps loading, and two plugins that own the same routes cannot both apply — the
+ * second one throws and takes every route it was going to register with it.
+ * @param profileDir - Desktop profile whose manifest is read.
+ * @returns Package names the catalog installed last time, empty when nothing is recorded.
+ */
+function readCatalogPackages(profileDir: string): string[] {
+  const manifestPath = join(profileDir, 'package.json')
+  if (!existsSync(manifestPath)) return []
+  try {
+    const manifest: unknown = JSON.parse(readFileSync(manifestPath, 'utf8'))
+    if (!record(manifest)) return []
+    const dsh = record(manifest.dsh) ? manifest.dsh : {}
+    const profile = record(dsh.profile) ? dsh.profile : {}
+    return Array.isArray(profile.catalogPackages) ? profile.catalogPackages.filter(text) : []
+  }
+  catch {
+    return []
+  }
+}
+
+/**
+ * Plugins a previous catalog installed and this one no longer ships.
+ * @param profileDir - Desktop profile whose manifest is read.
+ * @param current - Package names shipped by the catalog being seeded.
+ * @returns Names to uninstall from the profile.
+ */
+function retiredPackages(profileDir: string, current: readonly string[]): string[] {
+  return readCatalogPackages(profileDir).filter(name => !current.includes(name))
+}
+
+/**
+ * Make the profile's plugin selection match what the catalog ships.
+ *
+ * Two edits, both of which the profile cannot make for itself: drop bundle rows whose package is
+ * not on disk (a row without a package loads nothing and is how a retired plugin keeps a stale
+ * claim), and record the catalog-owned set so the next seeding can retire the next departure.
  * @param profileDir - Desktop profile whose manifest is rewritten.
  * @param packages - Package names the install added.
  * @param note - Receives the resulting selection.
  */
-function selectBundles(profileDir: string, packages: readonly string[], note: (message: string) => void): void {
+function reconcileProfile(
+  profileDir: string,
+  packages: readonly string[],
+  note: (message: string) => void,
+  extraRetired: readonly string[] = [],
+): void {
   const manifestPath = join(profileDir, 'package.json')
   const manifest: unknown = JSON.parse(readFileSync(manifestPath, 'utf8'))
   if (!record(manifest)) throw new Error(`profile manifest is not an object: ${manifestPath}`)
   const dsh = record(manifest.dsh) ? manifest.dsh : {}
   const profile = record(dsh.profile) ? dsh.profile : {}
   const current = Array.isArray(profile.bundles) ? profile.bundles.filter(text) : []
-  const selected = [...current]
+  const manifestOf = (name: string): unknown => {
+    const path = join(profileDir, 'node_modules', ...name.split('/'), 'package.json')
+    if (!existsSync(path)) return undefined
+    try {
+      return JSON.parse(readFileSync(path, 'utf8'))
+    }
+    catch {
+      return undefined
+    }
+  }
+  const recorded = readCatalogPackages(profileDir)
+  // A retired plugin may still sit on disk: dropping its row is what stops it from loading and
+  // claiming routes its successor now owns.
+  const retired = [...new Set([...recorded.filter(name => !packages.includes(name)), ...extraRetired])]
+    .filter(name => !packages.includes(name))
+  // Only rows this catalog retires are dropped. A row without a profile-local package is not
+  // stale by itself: base bundles resolve from the application, not from the profile.
+  const alive = current.filter(name => !retired.includes(name))
+  const dropped = current.filter(name => retired.includes(name))
+  const selected = [...alive]
   for (const name of packages) {
-    const packagePath = join(profileDir, 'node_modules', ...name.split('/'), 'package.json')
-    if (!existsSync(packagePath)) continue
-    const installed: unknown = JSON.parse(readFileSync(packagePath, 'utf8'))
+    const installed: unknown = manifestOf(name)
     if (!record(installed) || !record(installed.dsh) || !record(installed.dsh.bundle)) continue
     if (!selected.includes(name)) selected.push(name)
   }
-  if (selected.length === current.length) return
+  const unchanged = dropped.length === 0
+    && selected.length === current.length
+    && recorded.length === packages.length
+    && recorded.every((name, index) => name === packages[index])
+  if (unchanged) return
+  if (dropped.length > 0) note(`[catalog] dropped bundle rows without a package: ${dropped.join(', ')}`)
   note(`[catalog] profile bundles selected: ${selected.length}`)
-  writeAtomic(manifestPath, `${JSON.stringify({ ...manifest, dsh: { ...dsh, profile: { ...profile, bundles: selected } } }, undefined, 2)}\n`)
+  writeAtomic(manifestPath, `${JSON.stringify({ ...manifest, dsh: { ...dsh, profile: { ...profile, bundles: selected, catalogPackages: [...packages] } } }, undefined, 2)}\n`)
 }
 
 /**
@@ -388,17 +453,43 @@ export async function seedShippedCatalog(attempt: CatalogSeedOptions): Promise<C
       })
     const missing = tarballs.filter(path => !existsSync(path))
     if (missing.length > 0) throw new Error(`catalog tarball is missing: ${missing.join(', ')}`)
-    if (tarballs.length > 0) {
-      await runPackageManager(options, tarballs)
-      selectBundles(options.profileDir, items
-        .filter(item => item.kind === 'plugin' && text(item.file) !== undefined)
-        .map(item => text(item.id) ?? '')
-        .filter(name => name !== ''), options.note)
+    const packageNames = items
+      .filter(item => item.kind === 'plugin' && text(item.file) !== undefined)
+      .map(item => text(item.id) ?? '')
+      .filter(name => name !== '')
+    // The flavor names plugins it dropped, so an upgrade from a catalog that predates the
+    // `catalogPackages` record still retires them.
+    const declaredRaw: unknown = record(manifest) ? manifest.retired : undefined
+    const declared = Array.isArray(declaredRaw) ? declaredRaw.filter(text).filter(name => !packageNames.includes(name)) : []
+    const retired = [...new Set([...retiredPackages(options.profileDir, packageNames), ...declared])]
+    if (retired.length > 0) {
+      // Best effort: the row drop below already keeps the retired plugin out of the process, and a
+      // package manager that refuses to remove must not cost the user the rest of the catalog.
+      try {
+        await runPackageManager(options, retired, 'remove')
+        options.note(`[catalog] uninstalled plugins the catalog no longer ships: ${retired.join(', ')}`)
+      }
+      catch (error) {
+        const reason = error instanceof Error ? error.message : String(error)
+        options.note(`[catalog] could not uninstall ${retired.join(', ')}: ${reason}`)
+      }
     }
     // Content trees are independent of the package set: a failure in one of them must not cost
     // the others, because a missing runtime tree (git) silently disables editor features while
     // the plugins look installed. Failures are collected and reported as a partial attempt.
     const failures: string[] = []
+    if (tarballs.length > 0) {
+      try {
+        await runPackageManager(options, tarballs)
+      }
+      catch (error) {
+        // A registry that cannot resolve a peer must not cost the profile its reconciliation:
+        // dropping a retired row is what stops the old plugin from breaking the new one, and it
+        // needs no network. The install failure is still reported as a partial attempt.
+        failures.push(`plugin install failed: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+    reconcileProfile(options.profileDir, packageNames, options.note, declared)
     for (const item of items) {
       const label = `${String(item.kind)} ${String(item.id)}`
       try {

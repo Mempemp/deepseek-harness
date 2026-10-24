@@ -17,9 +17,14 @@ import {
 } from '../src/catalog-seed.ts'
 
 /** One throwaway catalog, profile, and home per case; seeding never touches the test runner's own paths. */
-function fixture(files: Readonly<Record<string, string>>, options: { readonly legacyMcpStore?: boolean } = {}): {
+function fixture(
+  files: Readonly<Record<string, string>>,
+  options: { readonly legacyMcpStore?: boolean; readonly pnpmStub?: boolean } = {},
+): {
   options: CatalogSeedOptions
   catalogDir: string
+  profileDir: string
+  pnpmLog: string
   written: string[]
 } {
   const root = mkdtempSync(join(tmpdir(), 'dsh-catalog-'))
@@ -37,11 +42,32 @@ function fixture(files: Readonly<Record<string, string>>, options: { readonly le
     writeFileSync(join(homeDir, MCP_MANAGER_LEGACY_STORE), `${JSON.stringify({ version: 1, servers: [{ name: 'v8std', url: 'https://old.example/mcp' }] }, undefined, 2)}\n`)
   }
   const written: string[] = []
+  const pnpmLog = join(profileDir, 'pnpm.log')
+  // The seeding only talks to the package manager through a child process, so a stub script that
+  // records its calls and edits node_modules is what lets a test see install and removal.
+  const pnpm = join(root, 'pnpm.mjs')
+  if (options.pnpmStub === true) {
+    writeFileSync(pnpm, [
+      "import { appendFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'",
+      "import { basename, join } from 'node:path'",
+      'const [, , action, ...rest] = process.argv',
+      "const specs = rest.filter(argument => !argument.startsWith('--'))",
+      "appendFileSync(join(process.cwd(), 'pnpm.log'), action + ' ' + specs.join(' ') + '\\n')",
+      'for (const spec of specs) {',
+      "  const name = spec.endsWith('.tgz') ? basename(spec).replace(/-\\d+\\.\\d+\\.\\d+.*$/, '') : spec",
+      "  const dir = join(process.cwd(), 'node_modules', ...name.split('/'))",
+      "  if (action === 'remove') { rmSync(dir, { recursive: true, force: true }); continue }",
+      '  mkdirSync(dir, { recursive: true })',
+      "  writeFileSync(join(dir, 'package.json'), JSON.stringify({ name, version: '1.0.0', dsh: { bundle: { patch: './cordis.patch.yml' } } }))",
+      '}',
+      '',
+    ].join('\n'))
+  }
   return {
-    catalogDir, written,
+    catalogDir, profileDir, pnpmLog, written,
     options: {
       catalogDir, profileDir, homeDir,
-      node: process.execPath, pnpm: join(root, 'pnpm.mjs'), nodeBin: root,
+      node: process.execPath, pnpm, nodeBin: root,
       note: message => written.push(message),
     },
   }
@@ -123,6 +149,62 @@ describe('catalog seeding', () => {
     expect(result.detail).toContain('python rlm-tools-bsl')
     expect(result.detail).toContain('uv')
     expect(seeded.written.some(message => message.includes('python rlm-tools-bsl failed'))).toBe(true)
+  })
+
+  it('retires a plugin the flavor dropped even when the profile has no catalog record', async () => {
+    // Обновление с любой прошлой сборки: маркера catalogPackages ещё нет, поэтому ушедший
+    // плагин называется в самом каталоге.
+    const seeded = fixture({
+      'manifest.json': `${JSON.stringify({
+        id: 'dsh-1c', version: '0.2.1', retired: ['dsh-rlm-tools-bsl'],
+        items: [{ kind: 'plugin', id: 'dsh-1c-project-properties', version: '0.9.2', file: 'plugins/dsh-1c-project-properties-0.9.2.tgz' }],
+      }, undefined, 2)}\n`,
+      'plugins/dsh-1c-project-properties-0.9.2.tgz': 'tar',
+    }, { pnpmStub: true })
+    writeFileSync(join(seeded.profileDir, 'package.json'), JSON.stringify({
+      name: 'dsh-profile-desktop',
+      dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', 'dsh-rlm-tools-bsl'] } },
+    }, undefined, 2))
+    mkdirSync(join(seeded.profileDir, 'node_modules', 'dsh-rlm-tools-bsl'), { recursive: true })
+    writeFileSync(join(seeded.profileDir, 'node_modules', 'dsh-rlm-tools-bsl', 'package.json'), JSON.stringify({ name: 'dsh-rlm-tools-bsl', dsh: { bundle: {} } }))
+
+    await expect(seedShippedCatalog(seeded.options)).resolves.toEqual({ outcome: 'applied' })
+    const manifest = JSON.parse(readFileSync(join(seeded.profileDir, 'package.json'), 'utf8')) as {
+      dsh: { profile: { bundles: string[] } }
+    }
+    expect(manifest.dsh.profile.bundles).toEqual(['@deepseek-ai/dsh-base', 'dsh-1c-project-properties'])
+    expect(readFileSync(seeded.pnpmLog, 'utf8')).toContain('remove dsh-rlm-tools-bsl')
+  })
+
+  it('uninstalls a plugin the new catalog no longer ships and drops its bundle row', async () => {
+    // Реальный случай: движок rlm переехал из отдельного плагина внутрь «Параметров проектов».
+    // Старый пакет остался в профиле, оба плагина владеют /rlm/*, второй apply падает — и вместе
+    // с ним пропадают все маршруты, которые он собирался зарегистрировать (/1cprops/state).
+    const first = fixture({
+      'manifest.json': manifestFile([{ kind: 'plugin', id: 'dsh-rlm-tools-bsl', version: '0.1.10', file: 'plugins/dsh-rlm-tools-bsl-0.1.10.tgz' }]),
+      'plugins/dsh-rlm-tools-bsl-0.1.10.tgz': 'tar',
+    }, { pnpmStub: true })
+    await expect(seedShippedCatalog(first.options)).resolves.toEqual({ outcome: 'applied' })
+    expect(existsSync(join(first.profileDir, 'node_modules', 'dsh-rlm-tools-bsl', 'package.json'))).toBe(true)
+
+    const second = fixture({
+      'manifest.json': manifestFile([{ kind: 'plugin', id: 'dsh-1c-project-properties', version: '0.9.2', file: 'plugins/dsh-1c-project-properties-0.9.2.tgz' }]),
+      'plugins/dsh-1c-project-properties-0.9.2.tgz': 'tar',
+    }, { pnpmStub: true })
+    writeFileSync(join(second.profileDir, 'package.json'), JSON.stringify({
+      name: 'dsh-profile-desktop',
+      dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', 'dsh-rlm-tools-bsl'], catalogPackages: ['dsh-rlm-tools-bsl'] } },
+    }, undefined, 2))
+    mkdirSync(join(second.profileDir, 'node_modules', 'dsh-rlm-tools-bsl'), { recursive: true })
+    writeFileSync(join(second.profileDir, 'node_modules', 'dsh-rlm-tools-bsl', 'package.json'), JSON.stringify({ name: 'dsh-rlm-tools-bsl', dsh: { bundle: {} } }))
+
+    await expect(seedShippedCatalog(second.options)).resolves.toEqual({ outcome: 'applied' })
+    const manifest = JSON.parse(readFileSync(join(second.profileDir, 'package.json'), 'utf8')) as {
+      dsh: { profile: { bundles: string[]; catalogPackages: string[] } }
+    }
+    expect(manifest.dsh.profile.bundles).toEqual(['@deepseek-ai/dsh-base', 'dsh-1c-project-properties'])
+    expect(manifest.dsh.profile.catalogPackages).toEqual(['dsh-1c-project-properties'])
+    expect(readFileSync(second.pnpmLog, 'utf8')).toContain('remove dsh-rlm-tools-bsl')
   })
 
   it('keeps rows the profile already had and replaces its own', async () => {

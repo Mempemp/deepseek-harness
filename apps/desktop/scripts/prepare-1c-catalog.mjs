@@ -422,10 +422,15 @@ export function loadInstallerFlavor(filePath) {
   const name = typeof data.name === 'string' && data.name.trim() !== '' ? data.name.trim() : 'DSH Desktop'
   const version = typeof data.version === 'string' && data.version.trim() !== '' ? data.version.trim() : '0.0.0'
   const id = typeof data.id === 'string' && data.id.trim() !== '' ? data.id.trim() : slugify(name)
+  // Плагины, которые каталог больше не поставляет. Без этого списка профиль, обновлённый с
+  // прошлой сборки, продолжает грузить ушедший плагин: он и его преемник владеют одними
+  // маршрутами, второй apply падает и теряет все свои маршруты.
+  const retired = Array.isArray(data.retired) ? data.retired.map(entry => String(entry).trim()).filter(entry => entry !== '') : []
   return {
     name,
     version,
     id,
+    retired,
     sources: sources.map((source, index) => validateFlavorSource(source, index)),
     filePath
   }
@@ -1704,6 +1709,7 @@ function manifestOfRecords(flavor, records) {
     id: flavor.id,
     generatedBy: 'apps/desktop/scripts/prepare-1c-catalog.mjs',
     flavor: flavor.filePath,
+    retired: Array.isArray(flavor.retired) ? flavor.retired : [],
     items,
     skipped
   }
