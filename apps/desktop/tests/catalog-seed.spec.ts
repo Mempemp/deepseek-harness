@@ -111,6 +111,20 @@ describe('catalog seeding', () => {
     expect(seeded.written.some(message => message.includes('tool git failed'))).toBe(true)
   })
 
+  it('reports a python tool it cannot install without the bundled uv', async () => {
+    // python-инструмент ставит комплектный uv; без него раскатка обязана назвать элемент, а не
+    // промолчать, иначе на машине просто не появится rlm-bsl-index без следов в логе.
+    const files = {
+      'manifest.json': manifestFile([{ kind: 'python', id: 'rlm-tools-bsl', spec: 'rlm-tools-bsl', version: '1.46.0', bin: 'rlm-bsl-index' }]),
+    }
+    const seeded = fixture(files)
+    const result = await seedShippedCatalog(seeded.options)
+    expect(result.outcome).toBe('partial')
+    expect(result.detail).toContain('python rlm-tools-bsl')
+    expect(result.detail).toContain('uv')
+    expect(seeded.written.some(message => message.includes('python rlm-tools-bsl failed'))).toBe(true)
+  })
+
   it('keeps rows the profile already had and replaces its own', async () => {
     const files = { 'manifest.json': manifestFile([mcpItem]) }
     const seeded = fixture(files)

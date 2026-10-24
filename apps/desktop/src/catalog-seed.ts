@@ -9,7 +9,7 @@
  * absent (a stock build) or when the profile already carries the same revision.
  */
 
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { basename, delimiter, join } from 'node:path'
@@ -52,7 +52,15 @@ interface CatalogItem {
   readonly serverName?: unknown
   readonly transport?: unknown
   readonly url?: unknown
+  readonly spec?: unknown
+  readonly bin?: unknown
 }
+
+/** Сколько ждём `uv tool install`: он качает Python и колёса пакета. */
+const PYTHON_TOOL_TIMEOUT_MS = 20 * 60 * 1000
+
+/** Имя исполняемого файла uv на текущей платформе. */
+const UV_BINARY_NAME = process.platform === 'win32' ? 'uv.exe' : 'uv'
 
 /** The catalog manifest written by the packer. */
 interface CatalogManifest {
@@ -257,6 +265,64 @@ function managerStorePath(homeDir: string, profileDir: string): string {
   return join(homeDir, MCP_MANAGER_DIR, MCP_MANAGER_STORE)
 }
 
+/** Найти uv, который привёз каталог: архив распаковывается как есть. */
+function resolveUvBinary(homeDir: string): string | undefined {
+  const root = join(homeDir, 'uv')
+  if (!existsSync(root)) return undefined
+  const dirs = [root]
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    if (entry.isDirectory()) dirs.push(join(root, entry.name))
+  }
+  for (const dir of dirs) {
+    const candidate = join(dir, UV_BINARY_NAME)
+    if (existsSync(candidate)) return candidate
+  }
+  return undefined
+}
+
+/**
+ * Поставить Python-инструмент комплектным uv.
+ *
+ * Индекс кода строит `rlm-bsl-index` из пакета `rlm-tools-bsl`, то есть это не дерево файлов, а
+ * пакет из индекса. Раньше его ставил плагин при первом открытии карточки — то есть у
+ * пользователя и с сетью в момент клика. Здесь тот же путь выполняется один раз при раскатке
+ * каталога: venv и бинарник встают в дом, в те же каталоги, где их ищет компонент
+ * (`<home>/<id>/bin`), поэтому самому плагину ставить уже нечего.
+ */
+function installPythonTool(options: CatalogSeedOptions, item: CatalogItem): void {
+  const spec = text(item.spec)
+  if (spec === undefined) throw new Error(`catalog python ${String(item.id)} is missing a spec`)
+  const id = String(item.id)
+  const uv = resolveUvBinary(options.homeDir)
+  if (uv === undefined) throw new Error('uv не найден в доме: инструмент uv должен идти в каталоге раньше python-инструментов')
+  const version = text(item.version)
+  const target = version === undefined ? spec : `${spec}==${version}`
+  const home = join(options.homeDir, id)
+  const result = spawnSync(uv, ['tool', 'install', target], {
+    encoding: 'utf8',
+    windowsHide: true,
+    timeout: PYTHON_TOOL_TIMEOUT_MS,
+    env: {
+      ...process.env,
+      UV_TOOL_DIR: join(home, 'tool'),
+      UV_TOOL_BIN_DIR: join(home, 'bin'),
+      UV_PYTHON_INSTALL_DIR: join(home, 'python'),
+      UV_NO_MODIFY_PATH: '1',
+      UV_DISABLE_UPDATE: '1',
+    },
+  })
+  const output = `${result.stdout ?? ''}${result.stderr ?? ''}`.trim()
+  if (result.status !== 0) {
+    throw new Error(`uv tool install ${target} завершился с кодом ${String(result.status)}: ${output.slice(-500)}`)
+  }
+  const bin = text(item.bin)
+  if (bin !== undefined) {
+    const placed = join(home, 'bin', process.platform === 'win32' ? `${bin}.exe` : bin)
+    if (!existsSync(placed)) throw new Error(`uv tool install ${target} прошёл, но ${placed} не появился`)
+  }
+  options.note(`[catalog] installed python ${id}`)
+}
+
 /** Mount one `kind: mcp` row in the store its manager reads, leaving other rows untouched. */
 function installMcpRow(options: CatalogSeedOptions, item: CatalogItem): void {
   const serverName = text(item.serverName) ?? text(item.id)
@@ -341,6 +407,10 @@ export async function seedShippedCatalog(attempt: CatalogSeedOptions): Promise<C
         // A tool lives directly under its id in the Harness home: `git` -> `<home>/git`, which is
         // the second place the 1C editor looks for the binary after an explicit settings path.
         else if (item.kind === 'tool') await installContentTree(stagedDir, options, item, join(options.homeDir, String(item.id)), 'tool')
+        // A Python tool is installed with the uv the catalog ships, not unpacked: the runtime is a
+        // package from an index, so provisioning it belongs to this step rather than to a plugin
+        // that would otherwise need uv, Python and network on the user's first click.
+        else if (item.kind === 'python') installPythonTool(options, item)
         else if (item.kind === 'mcp') installMcpRow(options, item)
       }
       catch (error) {

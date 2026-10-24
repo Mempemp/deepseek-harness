@@ -107,8 +107,8 @@ function logError(...args) {
  * Flavor file: a YAML subset parser, validation, and path resolution
  * ------------------------------------------------------------------ */
 
-export const FLAVOR_KINDS = Object.freeze(['plugin', 'mcp', 'skill', 'rules', 'payload', 'tool', 'catalog'])
-export const FLAVOR_FROMS = Object.freeze(['git', 'local', 'npm', 'market', 'backup', 'remote'])
+export const FLAVOR_KINDS = Object.freeze(['plugin', 'mcp', 'skill', 'rules', 'payload', 'tool', 'python', 'catalog'])
+export const FLAVOR_FROMS = Object.freeze(['git', 'local', 'npm', 'market', 'backup', 'remote', 'pypi'])
 
 /**
  * Flavor files are hand-written mappings of scalars (`docs`: comments carrying `#`
@@ -371,13 +371,23 @@ export function validateFlavorSource(source, index) {
       throw new Error(`${at}: kind: tool comes from a URL (from: remote) or a file (from: local)`)
     }
   }
+  if (kind === 'python') {
+    // Python-инструмент в каталог не пакуется: это пакет из индекса, и ставит его комплектный uv
+    // при первой раскатке. В манифест идут spec/version и имя исполняемого файла, по которому
+    // раскатка проверит результат.
+    requireString(row.id, `${at}.id`)
+    requireString(row.spec, `${at}.spec`)
+    requireString(row.version, `${at}.version`)
+    requireString(row.bin, `${at}.bin`)
+    if (from !== 'pypi') throw new Error(`${at}: kind: python comes from pypi`)
+  }
   return /** @type {FlavorSource} */ (row)
 }
 
 /**
  * @typedef {object} FlavorSource
- * @property {'plugin' | 'mcp' | 'skill' | 'rules' | 'payload' | 'tool' | 'catalog'} kind
- * @property {'git' | 'local' | 'npm' | 'market' | 'backup' | 'remote'} from
+ * @property {'plugin' | 'mcp' | 'skill' | 'rules' | 'payload' | 'tool' | 'python' | 'catalog'} kind
+ * @property {'git' | 'local' | 'npm' | 'market' | 'backup' | 'remote' | 'pypi'} from
  * @property {string} [url]
  * @property {string} [path]
  * @property {string} [spec]
@@ -388,6 +398,7 @@ export function validateFlavorSource(source, index) {
  * @property {string} [command]
  * @property {string[]} [args]
  * @property {string} [serverName]
+ * @property {string} [bin]
  * @property {Record<string, string>} [headers]
  */
 
@@ -1291,7 +1302,7 @@ async function materializeTree(source, index, workRoot, flavorFilePath) {
 
 /**
  * @typedef {object} CatalogItem
- * @property {'plugin' | 'mcp' | 'skill' | 'rules' | 'payload' | 'tool'} kind
+ * @property {'plugin' | 'mcp' | 'skill' | 'rules' | 'payload' | 'tool' | 'python'} kind
  * @property {string} id
  * @property {string} [label]
  * @property {string} [name]
@@ -1304,6 +1315,8 @@ async function materializeTree(source, index, workRoot, flavorFilePath) {
  * @property {string} [transport]
  * @property {string} [serverName]
  * @property {string} [url]
+ * @property {string} [spec]
+ * @property {string} [bin]
  */
 
 /**
@@ -1324,6 +1337,8 @@ function catalogListLabel(kind, title) {
       return `Payload: ${title}`
     case 'tool':
       return `Tool: ${title}`
+    case 'python':
+      return `Python: ${title}`
     default:
       return title
   }
@@ -1539,23 +1554,37 @@ async function vendorOneSource(source, index, paths, workRoot, flavorFilePath, h
     const id = source.id ?? `tool-${index}`
     const version = source.version ?? '0.0.0'
     const destination = join(paths.toolsDir, safeFileToken(id))
-    rmSync(destination, { recursive: true, force: true })
-    mkdirSync(destination, { recursive: true })
-    if (source.from === 'remote') {
-      const archive = await downloadToolArchive(source.url ?? '', workRoot)
-      log(`${at} tool: ${archive} -> ${destination}`)
-      extractArchive(archive, destination)
-    } else {
-      const local = resolveFlavorLocalPath(source.path ?? '', flavorFilePath, bundleRoot)
-      if (!existsSync(local)) throw new Error(`local path does not exist: ${local}`)
-      if (statSync(local).isDirectory()) {
-        cpSync(local, destination, { recursive: true })
-        log(`${at} tool: copying tree ${local} -> ${destination}`)
-      } else {
-        log(`${at} tool: ${local} -> ${destination}`)
-        extractArchive(local, destination)
+    // Windows отвечает EPERM/EBUSY на удаление дерева, которое в этот момент читает антивирус или
+    // индексатор: 82 МБ MinGit пересобираются при каждом прогоне, и одиночный отказ не должен
+    // выглядеть как «источника нет». Три попытки с паузой.
+    let lastError
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        rmSync(destination, { recursive: true, force: true })
+        mkdirSync(destination, { recursive: true })
+        if (source.from === 'remote') {
+          const archive = await downloadToolArchive(source.url ?? '', workRoot)
+          log(`${at} tool: ${archive} -> ${destination}`)
+          extractArchive(archive, destination)
+        } else {
+          const local = resolveFlavorLocalPath(source.path ?? '', flavorFilePath, bundleRoot)
+          if (!existsSync(local)) throw new Error(`local path does not exist: ${local}`)
+          if (statSync(local).isDirectory()) {
+            cpSync(local, destination, { recursive: true })
+            log(`${at} tool: copying tree ${local} -> ${destination}`)
+          } else {
+            log(`${at} tool: ${local} -> ${destination}`)
+            extractArchive(local, destination)
+          }
+        }
+        lastError = undefined
+        break
+      } catch (error) {
+        lastError = error
+        if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 500 * (attempt + 1)))
       }
     }
+    if (lastError !== undefined) throw lastError
     if (readdirSync(destination).length === 0) {
       throw new Error(`tool ${id} unpacked nothing into ${destination}`)
     }
@@ -1569,6 +1598,24 @@ async function vendorOneSource(source, index, paths, workRoot, flavorFilePath, h
         path: relative(paths.catalogDir, destination).replaceAll('\\', '/'),
         digest: treeSha256(destination),
         bytes: dirBytes(destination),
+        origin: sourceOrigin(source)
+      }
+    ]
+  }
+
+  if (source.kind === 'python') {
+    // Ничего не скачиваем: пакет поставит раскатка комплектным uv. Каталогу нужны только
+    // координаты пакета и имя бинарника для проверки после установки.
+    const id = source.id ?? `python-${index}`
+    return [
+      {
+        kind: 'python',
+        id,
+        name: source.name ?? id,
+        version: source.version ?? '0.0.0',
+        label: catalogListLabel('python', id),
+        spec: source.spec ?? id,
+        bin: source.bin ?? id,
         origin: sourceOrigin(source)
       }
     ]
@@ -1769,8 +1816,9 @@ export async function prepareCatalog(options = {}) {
   const mcp = manifest.items.filter((item) => item.kind === 'mcp').length
   const skills = manifest.items.filter((item) => item.kind === 'skill').length
   const tools = manifest.items.filter((item) => item.kind === 'tool').length
+  const pythons = manifest.items.filter((item) => item.kind === 'python').length
   log(
-    `done: ${manifest.items.length} item(s) built (plugins=${plugins} payloads=${payloads} mcp=${mcp} skills=${skills} tools=${tools}), ` +
+    `done: ${manifest.items.length} item(s) built (plugins=${plugins} payloads=${payloads} mcp=${mcp} skills=${skills} tools=${tools} python=${pythons}), ` +
       `${manifest.skipped.length} skipped, ${dirBytes(paths.catalogDir)} bytes in ${paths.catalogDir}`
   )
   if (pending.length > 0) {
