@@ -207,15 +207,35 @@ function stageCatalog(options: CatalogSeedOptions, fingerprint: string): string 
 }
 
 /** Copy one content tree into the Harness home, replacing a tree this catalog owns. */
-function installContentTree(stagedDir: string, options: CatalogSeedOptions, item: CatalogItem, destination: string, label: string): void {
+async function installContentTree(
+  stagedDir: string,
+  options: CatalogSeedOptions,
+  item: CatalogItem,
+  destination: string,
+  label: string,
+): Promise<void> {
   const relative = text(item.path)
   if (relative === undefined) throw new Error(`catalog ${label} ${String(item.id)} is missing a path`)
   const source = join(stagedDir, relative)
   if (!existsSync(source)) throw new Error(`catalog ${label} tree is missing: ${source}`)
-  rmSync(destination, { recursive: true, force: true })
-  mkdirSync(join(destination, '..'), { recursive: true })
-  cpSync(source, destination, { recursive: true })
-  options.note(`[catalog] installed ${label} ${String(item.id)}${item.version === undefined ? '' : `@${String(item.version)}`}`)
+  // Windows returns EPERM/EBUSY for a tree an anti-virus scanner or the indexer is reading at
+  // that moment. A short bounded retry turns a one-off lock into a slow copy instead of a
+  // missing runtime: the tool tree is 86 MB and was lost exactly this way once.
+  let lastError: unknown
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      rmSync(destination, { recursive: true, force: true })
+      mkdirSync(join(destination, '..'), { recursive: true })
+      cpSync(source, destination, { recursive: true })
+      options.note(`[catalog] installed ${label} ${String(item.id)}${item.version === undefined ? '' : `@${String(item.version)}`}`)
+      return
+    }
+    catch (error) {
+      lastError = error
+      if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 400 * (attempt + 1)))
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError))
 }
 
 function managerStorePath(homeDir: string, profileDir: string): string {
@@ -309,13 +329,30 @@ export async function seedShippedCatalog(attempt: CatalogSeedOptions): Promise<C
         .map(item => text(item.id) ?? '')
         .filter(name => name !== ''), options.note)
     }
+    // Content trees are independent of the package set: a failure in one of them must not cost
+    // the others, because a missing runtime tree (git) silently disables editor features while
+    // the plugins look installed. Failures are collected and reported as a partial attempt.
+    const failures: string[] = []
     for (const item of items) {
-      if (item.kind === 'payload') installContentTree(stagedDir, options, item, join(options.homeDir, PAYLOAD_HOME_DIR), 'payload')
-      else if (item.kind === 'skill') installContentTree(stagedDir, options, item, join(options.homeDir, 'skills', String(item.id)), 'skill')
-      // A tool lives directly under its id in the Harness home: `git` -> `<home>/git`, which is
-      // the second place the 1C editor looks for the binary after an explicit settings path.
-      else if (item.kind === 'tool') installContentTree(stagedDir, options, item, join(options.homeDir, String(item.id)), 'tool')
-      else if (item.kind === 'mcp') installMcpRow(options, item)
+      const label = `${String(item.kind)} ${String(item.id)}`
+      try {
+        if (item.kind === 'payload') await installContentTree(stagedDir, options, item, join(options.homeDir, PAYLOAD_HOME_DIR), 'payload')
+        else if (item.kind === 'skill') await installContentTree(stagedDir, options, item, join(options.homeDir, 'skills', String(item.id)), 'skill')
+        // A tool lives directly under its id in the Harness home: `git` -> `<home>/git`, which is
+        // the second place the 1C editor looks for the binary after an explicit settings path.
+        else if (item.kind === 'tool') await installContentTree(stagedDir, options, item, join(options.homeDir, String(item.id)), 'tool')
+        else if (item.kind === 'mcp') installMcpRow(options, item)
+      }
+      catch (error) {
+        const reason = error instanceof Error ? error.message : String(error)
+        failures.push(`${label}: ${reason}`)
+        options.note(`[catalog] ${label} failed: ${reason}`)
+      }
+    }
+    if (failures.length > 0) {
+      const detail = failures.join('; ')
+      options.note(`[catalog] seeding incomplete, retrying on the next launch: ${detail}`)
+      return { outcome: 'partial', detail }
     }
     writeAtomic(join(options.profileDir, CATALOG_MARKER_NAME), `${JSON.stringify({
       fingerprint,

@@ -93,6 +93,24 @@ describe('catalog seeding', () => {
     expect(readFileSync(join(seeded.options.homeDir, 'git', 'cmd', 'git.exe'), 'utf8')).toBe('MZ')
   })
 
+  it('keeps installing content trees when one of them fails', async () => {
+    // The tool tree is absent from the catalog on purpose: a broken runtime must not cost the
+    // payload and the MCP row, and the attempt has to say which item failed.
+    const files = {
+      'manifest.json': manifestFile([{ kind: 'tool', id: 'git', version: '2.56.0.3', path: 'tools/git' }, payloadItem, mcpItem]),
+      'payload/1c-rules/content/rules/1c.md': '# правила\n',
+    }
+    const seeded = fixture(files)
+    const result = await seedShippedCatalog(seeded.options)
+    expect(result.outcome).toBe('partial')
+    expect(result.detail).toContain('tool git')
+    expect(existsSync(join(seeded.options.homeDir, PAYLOAD_HOME_DIR, 'content', 'rules', '1c.md'))).toBe(true)
+    const store = JSON.parse(readFileSync(join(seeded.options.homeDir, MCP_MANAGER_DIR, MCP_MANAGER_STORE), 'utf8')) as { servers: { name: string }[] }
+    expect(store.servers.some(server => server.name === 'v8std')).toBe(true)
+    expect(existsSync(join(seeded.options.profileDir, CATALOG_MARKER_NAME))).toBe(false)
+    expect(seeded.written.some(message => message.includes('tool git failed'))).toBe(true)
+  })
+
   it('keeps rows the profile already had and replaces its own', async () => {
     const files = { 'manifest.json': manifestFile([mcpItem]) }
     const seeded = fixture(files)

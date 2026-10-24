@@ -614,6 +614,27 @@ function parseManifestJson(text) {
 }
 
 /**
+ * Drop a leading UTF-8 BOM from the packed manifest.
+ *
+ * npm copies `package.json` byte for byte, and the Harness reads a plugin manifest with
+ * `JSON.parse`, which rejects a BOM. A plugin saved through a Windows editor that writes
+ * one therefore fails to load with `Unexpected token '\ufeff'` — while every check on our
+ * side passes, because {@link parseManifestJson} tolerates it. Normalizing here keeps the
+ * catalog honest about what the Host will actually accept.
+ * @param {string} directory - package root about to be packed
+ * @returns {boolean} whether a BOM was removed
+ */
+export function normalizeManifestEncoding(directory) {
+  const manifestPath = join(directory, 'package.json')
+  if (!existsSync(manifestPath)) return false
+  const text = readFileSync(manifestPath, 'utf8')
+  if (text.charCodeAt(0) !== 0xfeff) return false
+  writeFileSync(manifestPath, text.slice(1))
+  log(`stripped UTF-8 BOM from ${manifestPath}`)
+  return true
+}
+
+/**
  * `package.json` straight out of a tarball — no extraction, so a 76 MB archive does
  * not have to be unpacked just to learn its name and version.
  * @param {string} archive
@@ -994,6 +1015,7 @@ export function ensureBundledProductionDependencies(directory) {
  * @param {string} destinationDir
  */
 export function packDirectoryAsTgz(directory, destinationDir) {
+  normalizeManifestEncoding(directory)
   mkdirSync(destinationDir, { recursive: true })
   const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm'
   const result = spawnSync(npm, ['pack', '--ignore-scripts', '--pack-destination', winShellArg(destinationDir)], {
@@ -1813,7 +1835,12 @@ if (invokedDirectly()) {
         `${prepared.manifest.items.length} item(s) built, ${prepared.skipped.length} skipped, ` +
         `${prepared.pending.length} source(s) pending`
     )
-    log(prepared.pending.length === 0 ? 'CATALOG COMPLETE' : `CATALOG INCOMPLETE (pending: ${prepared.pending.join(', ')})`)
+    // A skipped source is a hole in the product: a missing tool tree costs the editor its git,
+    // a missing plugin is invisible until someone looks for it. Exiting zero here once let a
+    // build ship a catalog without `tools/git` while the log still ended with CATALOG COMPLETE.
+    const failed = prepared.pending.length > 0 || prepared.skipped.length > 0
+    log(failed ? 'CATALOG INCOMPLETE' : 'CATALOG COMPLETE')
+    if (failed) process.exitCode = 1
   } else {
     log('dry run: nothing downloaded or written')
   }
