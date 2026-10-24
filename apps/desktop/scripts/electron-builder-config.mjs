@@ -34,6 +34,27 @@ import {
 } from './macos-app-update-config.mjs'
 
 /**
+ * Artifact name template for every packaged desktop build.
+ *
+ * The installer file name is how a release, its update feed and the release page agree on which
+ * bytes belong to which version, so it has exactly one definition: this one. Tests that check the
+ * publisher metadata, the upload plan, or the built artefacts read the template from here instead
+ * of repeating the string — a local copy silently kept asserting somebody else's product name after
+ * this build was rebranded.
+ * @param {string} suffix - Qualification suffix, e.g. `-unsigned`; empty for a release build.
+ * @returns {string} electron-builder artifactName template with version, os, arch and ext macros.
+ */
+export function createDesktopArtifactName(suffix = '') {
+  return `DSH-1C-Setup-\${version}-\${os}-\${arch}${suffix}.\${ext}`
+}
+
+/**
+ * Where released builds look for updates. One definition, because the updater, the packaged
+ * `app-update.yml`, the feed files and the release page must name the same address.
+ */
+export const DESKTOP_UPDATE_PUBLIC_URL = 'https://github.com/Mempemp/DSH-1C-deskop-bundle/releases/latest/download/'
+
+/**
  * Create electron-builder configuration from one release environment.
  * @param {NodeJS.ProcessEnv} env - Packaging environment.
  * @param {NodeJS.Platform} hostPlatform - Build-host platform used when no explicit target is present.
@@ -99,7 +120,7 @@ export function createElectronBuilderConfig(
   // The 1C bundle ships its own update feed from its own releases: the upstream CDN layout, its
   // release-id prefix, and the signing split are not used here. The address is the same for signed
   // and unsigned builds, so an unsigned local build still carries a feed the updater can read.
-  const update = { publicUrl: 'https://github.com/Mempemp/DSH-1C-deskop-bundle/releases/latest/download/' }
+  const update = { publicUrl: DESKTOP_UPDATE_PUBLIC_URL }
   if (preparedRuntime !== undefined) buildPaths.dsh = preparedRuntime
   // electron-builder merges extraMetadata into the packaged manifest, so a build version here reaches
   // the artifact names, the update feed, and the installed app.getVersion() the updater compares against.
@@ -122,7 +143,7 @@ export function createElectronBuilderConfig(
     },
     productName: DESKTOP_PRODUCT_NAME,
     // Unsigned builds carry their own suffix so a shared file can never pass for a release artifact.
-    artifactName: `DSH-1C-Setup-\${version}-\${os}-\${arch}${output.suffix}.\${ext}`,
+    artifactName: createDesktopArtifactName(output.suffix),
     directories: { output: output.directory },
     asar: true,
     electronDist: buildPaths.electron,

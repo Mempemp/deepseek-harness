@@ -8,6 +8,7 @@ import {
   resolveMacOSSigningEnvironment,
 } from '../scripts/desktop-release-environment.mjs'
 import { notarizeMacOSDiskImageArtifact } from '../scripts/notarize-macos-disk-images.mjs'
+import { createDesktopArtifactName, DESKTOP_UPDATE_PUBLIC_URL } from '../scripts/electron-builder-config.mjs'
 import {
   assertMacOSRuntimeSignatureDetails,
   assertMacOSSignatureDetails,
@@ -57,7 +58,9 @@ describe('desktop macOS release signature', () => {
       'com.apple.security.cs.disable-library-validation', 'com.apple.security.device.audio-input']) {
       expect(entitlements).toContain(`<key>${key}</key>\n    <true/>`)
     }
-    expect(config.extraResources).toHaveLength(2)
+    // runtime, the packed 1C catalog this build ships, and the window icon.
+    expect(config.extraResources).toHaveLength(3)
+    expect(config.extraResources[2]?.to).toBe('icon.png')
     expect(config.extraResources[0]?.to).toBe('runtime')
     expect(portablePath(config.extraResources[0]?.from ?? '')).toContain('/.desktop-build/targets/mac-arm64/runtime')
     const [dshFiles, dshNodeModules] = config.files.slice(-2)
@@ -85,10 +88,12 @@ describe('desktop macOS release signature', () => {
         sign: true,
         writeUpdateInfo: false,
       },
+      // One feed for every build of this product, not the upstream per-release feed derived from
+      // the qualification environment: releases of the bundle live in one place.
       publish: [{
         provider: 'generic',
-        url: 'https://desktop-updates.example.com/dsh-desk/0123456789abcdef0123456789abcdef/feeds/mac-arm64/',
-        channel: 'nightly',
+        url: DESKTOP_UPDATE_PUBLIC_URL,
+        channel: 'dsh1c',
       }],
     })
     expect(typeof config.artifactBuildCompleted).toBe('function')
@@ -147,9 +152,10 @@ describe('desktop macOS release signature', () => {
     }, 'win32', 'x64')
     expect(portablePath(config.directories.output)).toContain('/targets/win-x64/unsigned-artifacts')
     expect(portablePath(config.nsis.include)).toMatch(/\/scripts\/installer\.nsh$/u)
+    // This build carries the 1C feed even when unsigned: updating is how it reaches its users.
     expect(config).toMatchObject({
       win: { forceCodeSigning: false, signtoolOptions: { sign: undefined } },
-      publish: null,
+      publish: [{ provider: 'generic', url: DESKTOP_UPDATE_PUBLIC_URL, channel: 'dsh1c' }],
     })
   })
 
@@ -160,10 +166,10 @@ describe('desktop macOS release signature', () => {
       DSH_DESKTOP_UNSIGNED: '1',
     }, 'darwin', arch)
     expect(portablePath(config.directories.output)).toContain(`/targets/mac-${arch}/unsigned-artifacts`)
-    expect(config.artifactName).toBe('deepseek-harness-${version}-${os}-${arch}-unsigned.${ext}')
+    expect(config.artifactName).toBe(createDesktopArtifactName('-unsigned'))
     expect(config.mac).toMatchObject({ identity: '-', forceCodeSigning: false, notarize: false, target: ['dmg'] })
     expect(config.dmg).toMatchObject({ sign: false, writeUpdateInfo: false })
-    expect(config.publish).toBeNull()
+    expect(config.publish).toEqual([{ provider: 'generic', url: DESKTOP_UPDATE_PUBLIC_URL, channel: 'dsh1c' }])
     expect(config.extraMetadata).not.toHaveProperty('dshMandatoryUpdatePolicy')
     await expect(config.afterSign({ electronPlatformName: 'darwin' } as Parameters<typeof config.afterSign>[0])).resolves.toBeUndefined()
     expect(config.artifactBuildCompleted({ file: '/tmp/local-unsigned.dmg' })).toBeUndefined()
@@ -173,7 +179,7 @@ describe('desktop macOS release signature', () => {
     const { createElectronBuilderConfig } = await import('../scripts/electron-builder-config.mjs')
     const config = createElectronBuilderConfig({ ...RELEASE_ENVIRONMENT, DSH_DESKTOP_UNSIGNED: '1' }, 'darwin', 'arm64')
     expect(config.extraMetadata).not.toHaveProperty('dshMandatoryUpdatePolicy')
-    expect(config.publish).toBeNull()
+    expect(config.publish).toEqual([{ provider: 'generic', url: DESKTOP_UPDATE_PUBLIC_URL, channel: 'dsh1c' }])
   })
 
   it('rejects malformed signing modes', async () => {
