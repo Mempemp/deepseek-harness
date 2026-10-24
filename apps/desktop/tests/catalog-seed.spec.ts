@@ -82,6 +82,17 @@ describe('catalog seeding', () => {
     await expect(seedShippedCatalog(first.options)).resolves.toEqual({ outcome: 'applied' })
   })
 
+  it('unpacks a tool tree into the Harness home under its id', async () => {
+    const files = {
+      'manifest.json': manifestFile([{ kind: 'tool', id: 'git', version: '2.56.0.3', path: 'tools/git' }]),
+      'tools/git/cmd/git.exe': 'MZ',
+    }
+    const seeded = fixture(files)
+    await expect(seedShippedCatalog(seeded.options)).resolves.toEqual({ outcome: 'applied' })
+    // The 1C editor looks for `<DSH_HOME>/git/cmd/git.exe` when nothing else provides git.
+    expect(readFileSync(join(seeded.options.homeDir, 'git', 'cmd', 'git.exe'), 'utf8')).toBe('MZ')
+  })
+
   it('keeps rows the profile already had and replaces its own', async () => {
     const files = { 'manifest.json': manifestFile([mcpItem]) }
     const seeded = fixture(files)

@@ -107,7 +107,7 @@ function logError(...args) {
  * Flavor file: a YAML subset parser, validation, and path resolution
  * ------------------------------------------------------------------ */
 
-export const FLAVOR_KINDS = Object.freeze(['plugin', 'mcp', 'skill', 'rules', 'payload', 'catalog'])
+export const FLAVOR_KINDS = Object.freeze(['plugin', 'mcp', 'skill', 'rules', 'payload', 'tool', 'catalog'])
 export const FLAVOR_FROMS = Object.freeze(['git', 'local', 'npm', 'market', 'backup', 'remote'])
 
 /**
@@ -361,12 +361,22 @@ export function validateFlavorSource(source, index) {
     requireString(row.id, `${at}.id`)
     requireString(row.version, `${at}.version`)
   }
+  if (kind === 'tool') {
+    // A tool is an unpacked runtime (git, for the 1C editor), not a package: it needs a
+    // name to live under in the Harness home, a version for the report, and an archive
+    // URL or a local archive/directory to take the tree from.
+    requireString(row.id, `${at}.id`)
+    requireString(row.version, `${at}.version`)
+    if (from !== 'remote' && from !== 'local') {
+      throw new Error(`${at}: kind: tool comes from a URL (from: remote) or a file (from: local)`)
+    }
+  }
   return /** @type {FlavorSource} */ (row)
 }
 
 /**
  * @typedef {object} FlavorSource
- * @property {'plugin' | 'mcp' | 'skill' | 'rules' | 'payload' | 'catalog'} kind
+ * @property {'plugin' | 'mcp' | 'skill' | 'rules' | 'payload' | 'tool' | 'catalog'} kind
  * @property {'git' | 'local' | 'npm' | 'market' | 'backup' | 'remote'} from
  * @property {string} [url]
  * @property {string} [path]
@@ -434,6 +444,7 @@ export function catalogOutputPaths(root = appDir) {
     skillsDir: join(catalogDir, 'skills'),
     rulesDir: join(catalogDir, 'rules'),
     payloadDir: join(catalogDir, 'payload'),
+    toolsDir: join(catalogDir, 'tools'),
     manifestPath: join(catalogDir, 'manifest.json')
   }
 }
@@ -724,6 +735,37 @@ export function assertArchiveComplete(archive) {
   } finally {
     closeSync(handle)
   }
+}
+
+/**
+ * Fetch a `kind: tool` archive through the shared download cache: a resumed catalog run,
+ * or a second build of the same installer, must not pull the same 34 MB again. The cache
+ * is an optimisation only — an unwritable cache directory still yields a built catalog.
+ * @param {string} url
+ * @param {string} workRoot
+ * @returns {Promise<string>} Local path of the complete archive.
+ */
+async function downloadToolArchive(url, workRoot) {
+  const name = basename(new URL(url).pathname) || 'tool.zip'
+  const cached = join(downloadCacheDir(), name)
+  if (existsSync(cached)) {
+    try {
+      assertArchiveComplete(cached)
+      log(`download cache hit ${cached}`)
+      return cached
+    } catch {
+      rmSync(cached, { force: true })
+    }
+  }
+  const archive = join(workRoot, name)
+  await downloadFile(url, archive)
+  try {
+    mkdirSync(dirname(cached), { recursive: true })
+    copyFileSync(archive, cached)
+  } catch (error) {
+    log(`download cache not written ${cached}: ${error instanceof Error ? error.message : String(error)}`)
+  }
+  return archive
 }
 
 /**
@@ -1227,7 +1269,7 @@ async function materializeTree(source, index, workRoot, flavorFilePath) {
 
 /**
  * @typedef {object} CatalogItem
- * @property {'plugin' | 'mcp' | 'skill' | 'rules' | 'payload'} kind
+ * @property {'plugin' | 'mcp' | 'skill' | 'rules' | 'payload' | 'tool'} kind
  * @property {string} id
  * @property {string} [label]
  * @property {string} [name]
@@ -1258,6 +1300,8 @@ function catalogListLabel(kind, title) {
       return `Rules: ${title}`
     case 'payload':
       return `Payload: ${title}`
+    case 'tool':
+      return `Tool: ${title}`
     default:
       return title
   }
@@ -1467,6 +1511,47 @@ async function vendorOneSource(source, index, paths, workRoot, flavorFilePath, h
     ]
   }
 
+  if (source.kind === 'tool') {
+    // A tool ships as an unpacked tree: the first run copies it into the Harness home
+    // under its id, where the component looks for it (git -> <home>/git).
+    const id = source.id ?? `tool-${index}`
+    const version = source.version ?? '0.0.0'
+    const destination = join(paths.toolsDir, safeFileToken(id))
+    rmSync(destination, { recursive: true, force: true })
+    mkdirSync(destination, { recursive: true })
+    if (source.from === 'remote') {
+      const archive = await downloadToolArchive(source.url ?? '', workRoot)
+      log(`${at} tool: ${archive} -> ${destination}`)
+      extractArchive(archive, destination)
+    } else {
+      const local = resolveFlavorLocalPath(source.path ?? '', flavorFilePath, bundleRoot)
+      if (!existsSync(local)) throw new Error(`local path does not exist: ${local}`)
+      if (statSync(local).isDirectory()) {
+        cpSync(local, destination, { recursive: true })
+        log(`${at} tool: copying tree ${local} -> ${destination}`)
+      } else {
+        log(`${at} tool: ${local} -> ${destination}`)
+        extractArchive(local, destination)
+      }
+    }
+    if (readdirSync(destination).length === 0) {
+      throw new Error(`tool ${id} unpacked nothing into ${destination}`)
+    }
+    return [
+      {
+        kind: 'tool',
+        id,
+        name: source.name ?? id,
+        version,
+        label: catalogListLabel('tool', id),
+        path: relative(paths.catalogDir, destination).replaceAll('\\', '/'),
+        digest: treeSha256(destination),
+        bytes: dirBytes(destination),
+        origin: sourceOrigin(source)
+      }
+    ]
+  }
+
   throw new Error(`unsupported kind: ${source.kind}`)
 }
 
@@ -1588,7 +1673,7 @@ export async function prepareCatalog(options = {}) {
   const startedAt = Date.now()
 
   if (!resume) emptyDir(paths.catalogDir)
-  for (const directory of [paths.pluginsDir, paths.mcpDir, paths.skillsDir, paths.rulesDir, paths.payloadDir]) {
+  for (const directory of [paths.pluginsDir, paths.mcpDir, paths.skillsDir, paths.rulesDir, paths.payloadDir, paths.toolsDir]) {
     mkdirSync(directory, { recursive: true })
   }
   /** Per-source result kept between runs, so a long catalog can be built in chunks. */
@@ -1661,8 +1746,9 @@ export async function prepareCatalog(options = {}) {
   const payloads = manifest.items.filter((item) => item.kind === 'payload').length
   const mcp = manifest.items.filter((item) => item.kind === 'mcp').length
   const skills = manifest.items.filter((item) => item.kind === 'skill').length
+  const tools = manifest.items.filter((item) => item.kind === 'tool').length
   log(
-    `done: ${manifest.items.length} item(s) built (plugins=${plugins} payloads=${payloads} mcp=${mcp} skills=${skills}), ` +
+    `done: ${manifest.items.length} item(s) built (plugins=${plugins} payloads=${payloads} mcp=${mcp} skills=${skills} tools=${tools}), ` +
       `${manifest.skipped.length} skipped, ${dirBytes(paths.catalogDir)} bytes in ${paths.catalogDir}`
   )
   if (pending.length > 0) {

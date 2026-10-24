@@ -3,7 +3,9 @@
  *
  * The catalog is packed beside the application and installed into the Desktop profile once per
  * catalog revision: plugins through the bundled package manager, content trees into the Harness
- * home, and MCP rows into the store their manager reads. Nothing here runs when the catalog is
+ * home, and MCP rows into the store their manager reads. A `kind: tool` tree is a runtime the
+ * components expect to find by name in the Harness home (git for the 1C editor), so it is
+ * unpacked there rather than installed as a package. Nothing here runs when the catalog is
  * absent (a stock build) or when the profile already carries the same revision.
  */
 
@@ -310,6 +312,9 @@ export async function seedShippedCatalog(attempt: CatalogSeedOptions): Promise<C
     for (const item of items) {
       if (item.kind === 'payload') installContentTree(stagedDir, options, item, join(options.homeDir, PAYLOAD_HOME_DIR), 'payload')
       else if (item.kind === 'skill') installContentTree(stagedDir, options, item, join(options.homeDir, 'skills', String(item.id)), 'skill')
+      // A tool lives directly under its id in the Harness home: `git` -> `<home>/git`, which is
+      // the second place the 1C editor looks for the binary after an explicit settings path.
+      else if (item.kind === 'tool') installContentTree(stagedDir, options, item, join(options.homeDir, String(item.id)), 'tool')
       else if (item.kind === 'mcp') installMcpRow(options, item)
     }
     writeAtomic(join(options.profileDir, CATALOG_MARKER_NAME), `${JSON.stringify({
