@@ -174,3 +174,17 @@ it('writes documents atomically and leaves no temporary file behind', async () =
   expect(names).toEqual(['state.json'])
   expect(await stat(path).then(info => info.size)).toBe(8)
 })
+
+it('captures a snapshot on demand, not only before an update', async () => {
+  // A fresh install has no pre-update snapshot, so the rollback menu needs a copy the user can
+  // make themselves; the reason is recorded in the directory name and the manifest.
+  const root = await scratch()
+  const source = await home()
+  const now = new Date('2026-11-06T20:00:00.000Z')
+  const created = await createDataSnapshot({ home: source, root, appVersion: '0.2.2-rc.1-1', reason: 'manual', now })
+  expect(created.outcome).toBe('created')
+  expect(created.manifest?.reason).toBe('manual')
+  const listed = await readDataSnapshots(root)
+  expect(listed.map(manifest => manifest.id)).toContain(created.manifest?.id)
+  expect(created.manifest?.id).toContain('manual')
+})

@@ -172,7 +172,7 @@ describe('catalog seeding', () => {
     const manifest = JSON.parse(readFileSync(join(seeded.profileDir, 'package.json'), 'utf8')) as {
       dsh: { profile: { bundles: string[] } }
     }
-    expect(manifest.dsh.profile.bundles).toEqual(['@deepseek-ai/dsh-base', 'dsh-1c-project-properties'])
+    expect(manifest.dsh.profile.bundles).toEqual(['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-experimental-agent-team-profile', 'dsh-1c-project-properties'])
     expect(readFileSync(seeded.pnpmLog, 'utf8')).toContain('remove dsh-rlm-tools-bsl')
   })
 
@@ -202,7 +202,7 @@ describe('catalog seeding', () => {
     const manifest = JSON.parse(readFileSync(join(second.profileDir, 'package.json'), 'utf8')) as {
       dsh: { profile: { bundles: string[]; catalogPackages: string[] } }
     }
-    expect(manifest.dsh.profile.bundles).toEqual(['@deepseek-ai/dsh-base', 'dsh-1c-project-properties'])
+    expect(manifest.dsh.profile.bundles).toEqual(['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-experimental-agent-team-profile', 'dsh-1c-project-properties'])
     expect(manifest.dsh.profile.catalogPackages).toEqual(['dsh-1c-project-properties'])
     expect(readFileSync(second.pnpmLog, 'utf8')).toContain('remove dsh-rlm-tools-bsl')
   })

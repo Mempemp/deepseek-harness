@@ -72,7 +72,8 @@ import { DesktopQuitConfirmation } from './quit-confirmation.ts'
 import { DesktopTray } from './tray.ts'
 import { DesktopBackgroundNotice } from './background-notice.ts'
 import {
-  createDataSnapshot, pruneDataSnapshots, readDataSnapshots, restoreDataSnapshot, type DataSnapshotManifest,
+  createDataSnapshot, pruneDataSnapshots, readDataSnapshots, restoreDataSnapshot,
+  type DataSnapshotManifest, type DataSnapshotResult,
 } from './data-snapshot.ts'
 import {
   archiveInstaller, listArchivedInstallers, pruneArchivedInstallers, readUpdaterCacheDirName, selectRollbackInstaller,
@@ -277,6 +278,9 @@ function platformLoginUrl(authorizeUrl: string): string {
   url.searchParams.set('theme', nativeTheme.shouldUseDarkColors ? 'dark' : 'light')
   return url.href
 }
+
+/** Сколько ждать до заставки: на тёплом старте окно успевает раньше. */
+const STARTUP_SPLASH_DELAY_MS = 1200
 
 function createWindow(preload: string, show = false, primary = false): BrowserWindow {
   const window = new BrowserWindow({
@@ -594,6 +598,42 @@ async function main(): Promise<void> {
     quitWithoutConfirmation()
   }
 
+  /** Why nothing was captured, in the user's language: the reason closes over the outcome value. */
+  const snapshotOutcomeText = (snapshot: DataSnapshotResult): string => {
+    switch (snapshot.outcome) {
+      case 'empty': return locale.messages.snapshotOutcomeEmpty
+      case 'low-space': return locale.messages.snapshotOutcomeLowSpace
+      case 'oversized': return locale.messages.snapshotOutcomeOversized
+      default: return locale.messages.snapshotOutcomeFailed
+    }
+  }
+
+  /**
+   * Snapshot on demand. A fresh install has nothing to restore from until the first update, so the
+   * rollback menu used to be a dead end; a copy made now is what makes it testable and useful.
+   */
+  const createSnapshotNow = async (): Promise<void> => {
+    const snapshot = await createDataSnapshot({
+      home: resolveDshHome(), root: recoveryPaths.snapshots, appVersion: app.getVersion(), reason: 'manual',
+    })
+    if (snapshot.outcome !== 'created' || snapshot.manifest === undefined) {
+      await ordinaryMessageBox({
+        type: 'warning',
+        title: locale.messages.snapshotCreateMenu,
+        message: formatDesktopMessage(locale.messages.snapshotCreateFailed, { reason: snapshotOutcomeText(snapshot) }),
+      })
+      return
+    }
+    await pruneDataSnapshots(recoveryPaths.snapshots).catch((error: unknown) => { console.error(error) })
+    await ordinaryMessageBox({
+      type: 'info',
+      title: locale.messages.snapshotCreateMenu,
+      message: formatDesktopMessage(locale.messages.snapshotCreated, {
+        files: String(snapshot.manifest.totals.files), size: formatBytes(snapshot.manifest.totals.bytes),
+      }),
+    })
+  }
+
   const chooseSnapshot = async (): Promise<void> => {
     const manifests = await readDataSnapshots(recoveryPaths.snapshots).catch(() => [])
     if (manifests.length === 0) {
@@ -640,6 +680,7 @@ async function main(): Promise<void> {
         click: () => { void confirmRollback() },
       })
     }
+    items.push({ label: locale.messages.snapshotCreateMenu, click: () => { void createSnapshotNow() } })
     items.push({ label: locale.messages.snapshotRestoreMenu, click: () => { void chooseSnapshot() } })
     return items
   }
@@ -933,6 +974,7 @@ async function main(): Promise<void> {
       // The existing Web document resumes through the boot IPC response.
     })().catch((error: unknown) => {
       updateJournal?.action('workspace-failed')
+      closeStartupSplash()
       reportFatal(error, 'main')
       throw error
     }).finally(() => { startup = undefined })
@@ -1579,10 +1621,50 @@ async function main(): Promise<void> {
     })().finally(() => { openingWelcome = undefined })
     return openingWelcome
   }
+  // Порядок запуска: сначала окно, потом работа. Иначе первый запуск, который ставит каталог
+  // (пакеты плагинов и рантаймы), идёт минутами без единого окна — со стороны это выглядит как
+  // «процесс висит и не запускается».
+  let startupSplash: BrowserWindow | undefined
+  const showStartupSplash = async (): Promise<void> => {
+    if (quitting || startupSplash !== undefined) return
+    const window = new BrowserWindow({
+      width: 420, height: 200, frame: false, resizable: false, show: false,
+      backgroundColor: nativeTheme.shouldUseDarkColors ? '#141414' : '#f7f7f7',
+      webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true },
+    })
+    startupSplash = window
+    try {
+      await window.loadFile(join(app.getAppPath(), 'renderer', 'startup.html'))
+    }
+    catch (error) { console.error(error) }
+    // Закрыть заставку могли, пока грузилась страница: уничтоженное окно не показываем.
+    if (window.isDestroyed()) return
+    window.show()
+  }
+  // Заставка появляется только если запуск действительно затянулся: на тёплом старте окно
+  // готово быстрее, и мигать экраном незачем.
+  let startupSplashTimer: NodeJS.Timeout | undefined
+  const scheduleStartupSplash = (): void => {
+    if (startupSplashTimer !== undefined) return
+    startupSplashTimer = setTimeout(() => {
+      startupSplashTimer = undefined
+      void showStartupSplash().catch((error: unknown) => { console.error(error) })
+    }, STARTUP_SPLASH_DELAY_MS)
+  }
+  const closeStartupSplash = (): void => {
+    if (startupSplashTimer !== undefined) {
+      clearTimeout(startupSplashTimer)
+      startupSplashTimer = undefined
+    }
+    const window = startupSplash
+    startupSplash = undefined
+    if (window !== undefined && !window.isDestroyed()) window.destroy()
+  }
   const openInitialWindow = async (): Promise<void> => {
     if (quitting || recovery.active) return
     const state = await readWelcomeState()
     if (isQuitting() || backend.state.phase !== 'ready') return
+    closeStartupSplash()
     locale = resolveDesktopStartupLocale(state.localePreference, systemLanguages)
     writeDesktopLocaleCache(app.getPath('userData'), locale.id)
     windowsLanguage = locale.id
@@ -1598,6 +1680,7 @@ async function main(): Promise<void> {
   focusPrimaryWindow = () => {
     if (quitting) return
     if (isMandatory()) { mandatoryUI?.focus(); return }
+    if (startupSplash !== undefined && !startupSplash.isDestroyed()) { startupSplash.focus(); return }
     const window = welcomeWindow ?? mainWindow
     if (window === undefined || window.isDestroyed()) {
       try { createMainWindow() } catch (error) { reportFatal(error, 'main'); return }
@@ -1714,6 +1797,7 @@ async function main(): Promise<void> {
     }).catch((error: unknown) => { console.error(error) })
   }
   automaticCheck()
+  scheduleStartupSplash()
   await reconcileBackend().catch(() => undefined)
   // Window lifecycle callbacks run while backend startup is pending.
   if (isQuitting()) return

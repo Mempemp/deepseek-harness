@@ -140,6 +140,13 @@ function writeAtomic(path: string, contents: string): void {
   renameSync(temporary, path)
 }
 
+/**
+ * Bundle rows this build turns on for every profile. Agent Teams is the upstream coordination layer
+ * its own bundle replaces direct delegation with; the application ships it, so the row resolves
+ * from there and no package is installed into the profile.
+ */
+export const ENABLED_BUNDLES: readonly string[] = ['@deepseek-ai/dsh-experimental-agent-team-profile']
+
 /** Core plugin whose Discover tab reads a market index; the bundle ships no market plugin of its own. */
 export const MARKET_INDEX_PATCH_ID = 'plugin-market'
 export const MARKET_INDEX_PLUGIN = '@deepseek-ai/dsh-plugin-market'
@@ -300,6 +307,7 @@ function reconcileProfile(
   const alive = current.filter(name => !retired.includes(name))
   const dropped = current.filter(name => retired.includes(name))
   const selected = [...alive]
+  for (const name of ENABLED_BUNDLES) if (!selected.includes(name)) selected.push(name)
   for (const name of packages) {
     const installed: unknown = manifestOf(name)
     if (!record(installed) || !record(installed.dsh) || !record(installed.dsh.bundle)) continue
