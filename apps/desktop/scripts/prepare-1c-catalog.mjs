@@ -696,6 +696,22 @@ export function tarballContainsPath(archive, relativePath) {
 }
 
 /**
+ * Place a `kind: tool` payload into its catalog directory: an archive is unpacked, a single
+ * file (the 1C code analyzer ships as a bare .exe) is copied under its own name.
+ * @param {string} file
+ * @param {string} destination
+ */
+function installToolPayload(file, destination) {
+  mkdirSync(destination, { recursive: true })
+  const name = file.toLowerCase()
+  if (!TOOL_ARCHIVE_SUFFIXES.some(suffix => name.endsWith(suffix))) {
+    copyFileSync(file, join(destination, basename(file)))
+    return
+  }
+  extractArchive(file, destination)
+}
+
+/**
  * @param {string} archive
  * @param {string} destination
  */
@@ -741,6 +757,9 @@ function safePackageDir(name) {
 const ZIP_EOCD_SIGNATURE = 0x06054b50
 const ZIP_EOCD_SIZE = 22
 const ZIP_MAX_COMMENT = 0xffff
+
+/** Suffixes a `kind: tool` payload is unpacked from; anything else is a single file. */
+const TOOL_ARCHIVE_SUFFIXES = Object.freeze(['.zip', '.tar', '.tar.gz', '.tgz', '.txz', '.7z'])
 
 /**
  * codeload streams chunked archives without a content-length, so a cut download
@@ -1570,7 +1589,7 @@ async function vendorOneSource(source, index, paths, workRoot, flavorFilePath, h
         if (source.from === 'remote') {
           const archive = await downloadToolArchive(source.url ?? '', workRoot)
           log(`${at} tool: ${archive} -> ${destination}`)
-          extractArchive(archive, destination)
+          installToolPayload(archive, destination)
         } else {
           const local = resolveFlavorLocalPath(source.path ?? '', flavorFilePath, bundleRoot)
           if (!existsSync(local)) throw new Error(`local path does not exist: ${local}`)
@@ -1579,7 +1598,7 @@ async function vendorOneSource(source, index, paths, workRoot, flavorFilePath, h
             log(`${at} tool: copying tree ${local} -> ${destination}`)
           } else {
             log(`${at} tool: ${local} -> ${destination}`)
-            extractArchive(local, destination)
+            installToolPayload(local, destination)
           }
         }
         lastError = undefined

@@ -13,6 +13,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { basename, delimiter, join } from 'node:path'
+import { load } from 'js-yaml'
 
 /** Directory beside the packaged application resources holding the packed catalog. */
 export const CATALOG_RESOURCES_DIR = 'installer-catalog'
@@ -137,6 +138,63 @@ function writeAtomic(path: string, contents: string): void {
   const temporary = `${path}.tmp`
   writeFileSync(temporary, contents, { mode: 0o600 })
   renameSync(temporary, path)
+}
+
+/** Core plugin whose Discover tab reads a market index; the bundle ships no market plugin of its own. */
+export const MARKET_INDEX_PATCH_ID = 'plugin-market'
+export const MARKET_INDEX_PLUGIN = '@deepseek-ai/dsh-plugin-market'
+export const MARKET_INDEX_URL = 'https://cdn.jsdelivr.net/npm/dsh-plugin-catalog/index.json'
+
+/**
+ * Point the core Discover page at a market index.
+ *
+ * Upstream ships that page without sources, so a fresh profile shows an empty tab. The bundle used
+ * to carry a market plugin that brought its own index; it no longer does, and this row replaces
+ * exactly that: same catalogue, no extra plugin. Idempotent — a row with our id, whoever wrote it,
+ * is left untouched, and a patch layer that is not a YAML list is never rewritten.
+ * @param profileDir - profile directory holding the user patch layer.
+ * @param note - receives one line about what happened.
+ */
+export function ensureMarketIndex(profileDir: string, note: (message: string) => void): void {
+  const path = join(profileDir, 'cordis.patch.yml')
+  let current: string | undefined
+  try {
+    current = readFileSync(path, 'utf8')
+  }
+  catch {
+    current = undefined
+  }
+  if (current !== undefined) {
+    let parsed: unknown
+    try {
+      parsed = load(current)
+    }
+    catch (error) {
+      note(`[catalog] market index skipped: unreadable patch layer (${error instanceof Error ? error.message : String(error)})`)
+      return
+    }
+    if (Array.isArray(parsed) && parsed.some(entry => record(entry) && entry.id === MARKET_INDEX_PATCH_ID)) return
+    // Anything but an empty document or a list is the user's structure, not ours to rewrite.
+    if (parsed !== undefined && parsed !== null && !Array.isArray(parsed)) return
+  }
+  const entry = [
+    `- id: ${MARKET_INDEX_PATCH_ID}`,
+    `  name: '${MARKET_INDEX_PLUGIN}'`,
+    '  config:',
+    '    indexes:',
+    `      - ${MARKET_INDEX_URL}`,
+    '',
+  ].join('\n')
+  const header = [
+    '# Your patch layer for this dsh profile, applied after every bundle layer:',
+    '# a top-level YAML array of loader patch entries.',
+    '',
+  ].join('\n')
+  const base = current === undefined ? header : current.endsWith('\n') ? current : `${current}\n`
+  writeAtomic(path, `${base}${entry}`)
+  note(current === undefined
+    ? '[catalog] market index written into a new profile patch'
+    : '[catalog] market index added to the profile patch')
 }
 
 /** Run the bundled package manager in the profile with the bounded output startup can hold. */
@@ -441,6 +499,10 @@ export async function seedShippedCatalog(attempt: CatalogSeedOptions): Promise<C
   try {
     const manifest = readCatalogManifest(options.catalogDir)
     if (manifest === undefined) return { outcome: 'absent' }
+    // Cheap and idempotent, so it runs on every launch rather than once per catalog revision: a
+    // profile whose patch layer was recreated or rewritten would otherwise lose the market index
+    // and leave the Discover tab empty.
+    ensureMarketIndex(options.profileDir, options.note)
     const fingerprint = catalogFingerprint(options.catalogDir)
     if (markedFingerprint(options.profileDir) === fingerprint) return { outcome: 'skipped' }
     const items = catalogItems(manifest)
