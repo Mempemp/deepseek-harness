@@ -16,6 +16,13 @@ interface RecoveryOperations {
   revealReport(path: string): Promise<void>
   /** Persist the complete diagnostic; resolves with the file path, or `undefined` when nothing was written. */
   writeReport(error: unknown, source: CrashReportSource): Promise<string | undefined>
+  /**
+   * Release the user can return to, when its installer is archived on this computer.
+   * Absent (or resolving to `undefined`) hides the rollback choice entirely.
+   */
+  rollbackVersion?: () => string | undefined
+  /** Run the archived installer of {@link rollbackVersion}; resolves once the handoff has started. */
+  rollback?: () => Promise<void>
 }
 
 type ReportState = { kind: 'pending' } | { kind: 'failed' } | { kind: 'ready'; path: string }
@@ -76,9 +83,17 @@ export class DesktopFatalRecovery {
     let message = messages.fatalSummary
     for (;;) {
       const addressInUse = /\blisten EADDRINUSE\b/u.test(detail)
+      const rollbackVersion = addressInUse ? undefined : this.operations.rollbackVersion?.()
       const buttons = addressInUse
         ? [messages.exitApplication, messages.restartApplication]
-        : [messages.exitApplication, messages.restartApplication, messages.disableThirdPartyPlugins]
+        : rollbackVersion === undefined
+          ? [messages.exitApplication, messages.restartApplication, messages.disableThirdPartyPlugins]
+          : [
+            messages.exitApplication, messages.restartApplication, messages.disableThirdPartyPlugins,
+            formatDesktopMessage(messages.recoveryRollback, { version: rollbackVersion }),
+          ]
+      // The rollback choice keeps its own index; the report button is appended last and read back.
+      const rollbackButton = rollbackVersion === undefined ? undefined : 3
       const reportButton = this.reportState.kind === 'failed' ? undefined : buttons.length
       if (reportButton !== undefined) buttons.push(messages.getDiagnosticReport)
       const { response } = await this.operations.show({
@@ -114,6 +129,11 @@ export class DesktopFatalRecovery {
       try {
         await this.operations.stop()
         if (response === 2) await this.operations.disablePlugins()
+        // The rollback hands the application to another installer, which ends this process itself.
+        if (response === rollbackButton) {
+          await this.operations.rollback?.()
+          return
+        }
         this.operations.restart()
         return
       } catch (failure) {

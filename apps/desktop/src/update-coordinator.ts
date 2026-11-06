@@ -47,6 +47,7 @@ export class DesktopUpdateCoordinator {
    * @param currentVersion - Actual installed application version.
    * @param channel - Installed package channel; omitted test/local callers retain nightly.
    * @param downloadResult - Once per completed download attempt, including platform preparation failures.
+   * @param skipped - Versions the user rolled back from, which unattended checks must not offer again.
    */
   constructor(
     private readonly publish: (state: DesktopUpdateState) => DesktopUpdateState,
@@ -56,6 +57,7 @@ export class DesktopUpdateCoordinator {
     private readonly currentVersion: () => string = () => app.getVersion(),
     private readonly downloadResult?: (success: boolean, reason?: string) => void,
     private readonly channel: 'nightly' | 'latest' = 'nightly',
+    private readonly skipped?: (version: string) => boolean,
   ) {
     if (updater === autoUpdater) {
       // electron-updater omits this internal transport property from its public declarations.
@@ -68,7 +70,12 @@ export class DesktopUpdateCoordinator {
     }
     this.updater.autoDownload = false
     this.updater.autoInstallOnAppQuit = false
-    this.updater.channel = channel
+    // The 1C line keeps its own feed file. `latest.yml` stays reserved for the predecessor
+    // 0.11.x builds: they compare their version against it and would never accept a 0.2.x
+    // release, so every release ships a bridge manifest there and `dsh1c.yml` for us.
+    this.updater.channel = 'dsh1c'
+    // Our own releases carry a sub-release counter (`0.2.1-rc.2-1`), which electron-updater reads as
+    // a prerelease, so the bundled channel keeps prereleases enabled as it always has.
     this.updater.allowPrerelease = channel === 'nightly'
     // Selecting a channel can enable downgrade in electron-updater.
     this.updater.allowDowngrade = false
@@ -190,7 +197,9 @@ export class DesktopUpdateCoordinator {
       const version = result.updateInfo.version
       if (valid(version) === null) throw new Error('desktop update: feed version is invalid')
       if (this.channel === 'latest' && version.includes('-')) throw new Error('desktop update: latest feed contains a prerelease')
-      this.candidate = result.isUpdateAvailable && gt(version, this.currentVersion()) ? version : undefined
+      this.candidate = result.isUpdateAvailable && gt(version, this.currentVersion()) && !(this.skipped?.(version) ?? false)
+        ? version
+        : undefined
       return this.setState(this.candidate === undefined ? { phase: 'idle' } : { phase: 'available', version })
     } catch (error) {
       return this.failure(error, 'check')

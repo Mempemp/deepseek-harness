@@ -1,7 +1,8 @@
 import { readInstallerLocales, renderInstallerStrings } from './installer-locales.mjs'
 import { officePackageDirectories } from '../../../scripts/libreoffice-packages.mjs'
+import { DESKTOP_PRODUCT_NAME } from './desktop-product-name.mjs'
 import { X509Certificate } from 'node:crypto'
-import { readFileSync } from 'node:fs'
+import { readFileSync, existsSync } from 'node:fs'
 import { readFile, writeFile } from 'node:fs/promises'
 import { join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -20,10 +21,8 @@ import {
   resolveWindowsUpdatePublisher,
   scrubWindowsSigningEnvironment,
 } from './windows-sign.mjs'
-import { resolveDesktopAutoUpdateConfig } from './desktop-auto-update-environment.mjs'
 import { resolveDesktopBuildCommit } from './desktop-build-commit.mjs'
 import { resolveDesktopBuildVersion } from './desktop-build-version.mjs'
-import { resolveDesktopPolicyEnvironment } from './desktop-policy-environment.mjs'
 import { desktopArtifactOutput, desktopTargetBuildPaths, resolveDesktopBuildTarget } from './desktop-build-paths.mjs'
 import { installWindowsDirectoryInstaller } from './windows-directory-installer.mjs'
 import { preserveWindowsRuntimeSignature, signWindowsCode } from './windows-runtime-signature.mjs'
@@ -34,6 +33,27 @@ import {
   verifyMacOSAppUpdateConfig,
   writeMacOSAppUpdateConfig,
 } from './macos-app-update-config.mjs'
+
+/**
+ * Artifact name template for every packaged desktop build.
+ *
+ * The installer file name is how a release, its update feed and the release page agree on which
+ * bytes belong to which version, so it has exactly one definition: this one. Tests that check the
+ * publisher metadata, the upload plan, or the built artefacts read the template from here instead
+ * of repeating the string — a local copy silently kept asserting somebody else's product name after
+ * this build was rebranded.
+ * @param {string} suffix - Qualification suffix, e.g. `-unsigned`; empty for a release build.
+ * @returns {string} electron-builder artifactName template with version, os, arch and ext macros.
+ */
+export function createDesktopArtifactName(suffix = '') {
+  return `DSH-1C-Setup-\${version}-\${os}-\${arch}${suffix}.\${ext}`
+}
+
+/**
+ * Where released builds look for updates. One definition, because the updater, the packaged
+ * `app-update.yml`, the feed files and the release page must name the same address.
+ */
+export const DESKTOP_UPDATE_PUBLIC_URL = 'https://github.com/Mempemp/DSH-1C-deskop-bundle/releases/latest/download/'
 
 /**
  * Create electron-builder configuration from one release environment.
@@ -66,7 +86,9 @@ export function createElectronBuilderConfig(
   if (skipNotarization && (unsigned || resolvedPlatform !== 'darwin')) throw new Error('Skipping notarization requires a signed macOS build')
   const packagesMacOS = targetPlatform === 'darwin' || (targetPlatform === undefined && hostPlatform === 'darwin')
   const packagesWindows = resolvedPlatform === 'win32'
-  const policy = packagesMacOS && unsigned ? undefined : resolveDesktopPolicyEnvironment(env)
+  // The 1C bundle does not participate in DeepSeek's mandatory-update service: the policy is baked into
+  // the packaged metadata and would let a remote decision block this product, so it is not embedded.
+  const policy = undefined
   if (resolvedPlatform === 'win32') installWindowsDirectoryInstaller()
   const macOSSigning = packagesMacOS && !unsigned ? resolveMacOSSigningEnvironment(env) : undefined
   if (packagesMacOS && !unsigned && !skipNotarization) resolveMacOSNotarizationEnvironment(env)
@@ -96,7 +118,10 @@ export function createElectronBuilderConfig(
   if (windowsSigner !== undefined) {
     installWindowsNsisBootstrapSigner({ sign: windowsSigner })
   }
-  const update = unsigned ? undefined : resolveDesktopAutoUpdateConfig(env, resolvedPlatform, resolvedArch)
+  // The 1C bundle ships its own update feed from its own releases: the upstream CDN layout, its
+  // release-id prefix, and the signing split are not used here. The address is the same for signed
+  // and unsigned builds, so an unsigned local build still carries a feed the updater can read.
+  const update = { publicUrl: DESKTOP_UPDATE_PUBLIC_URL }
   if (preparedRuntime !== undefined) buildPaths.dsh = preparedRuntime
   // electron-builder merges extraMetadata into the packaged manifest, so a build version here reaches
   // the artifact names, the update feed, and the installed app.getVersion() the updater compares against.
@@ -104,6 +129,9 @@ export function createElectronBuilderConfig(
   const buildVersion = resolveDesktopBuildVersion(env, productVersion)
   if (update?.channel === 'latest' && buildVersion.includes('-')) throw new Error('desktop package: latest requires a stable version')
   const packaged = resolveDesktopBuildCommit(env)
+  // The packed 1C catalog sits beside this configuration, not under the target build tree, so the
+  // stock application (which ships no catalog) and our bundle share one packaging path.
+  const catalogSource = fileURLToPath(new URL('../installer-catalog', import.meta.url))
   return {
     appId,
     protocols: [{ name: 'DeepSeek Harness', schemes: ['dsh'] }],
@@ -114,11 +142,11 @@ export function createElectronBuilderConfig(
       ...buildVersion === productVersion ? {} : { version: buildVersion },
       ...packaged === undefined ? {} : { dshBuildCommit: packaged.commit, dshBuildDirty: packaged.dirty },
     },
-    productName: 'DeepSeek Harness',
+    productName: DESKTOP_PRODUCT_NAME,
     // The default copyright uses author.name; this line names the product instead.
     copyright: `Copyright © ${new Date().getFullYear()} \${productName}`,
     // Unsigned builds carry their own suffix so a shared file can never pass for a release artifact.
-    artifactName: `deepseek-harness-\${version}-\${os}-\${arch}${output.suffix}.\${ext}`,
+    artifactName: createDesktopArtifactName(output.suffix),
     directories: { output: output.directory },
     asar: true,
     electronDist: buildPaths.electron,
@@ -157,6 +185,8 @@ export function createElectronBuilderConfig(
     asarUnpack: unpack,
     extraResources: [
       { from: buildPaths.runtime, to: 'runtime' },
+      // The packed 1C catalog: installed into the profile by the shell on first run.
+      ...(existsSync(catalogSource) ? [{ from: catalogSource, to: 'installer-catalog' }] : []),
       { from: fileURLToPath(new URL('../resources/icon-windows.png', import.meta.url)), to: 'icon.png' },
       // Windows tray bitmaps; macOS keeps the Dock and ships no menu bar icon.
       ...(packagesWindows ? [{ from: fileURLToPath(new URL('../resources/tray-windows.ico', import.meta.url)), to: 'tray.ico' }] : []),
@@ -269,6 +299,6 @@ export function createElectronBuilderConfig(
       differentialPackage: true,
     },
     detectUpdateChannel: false,
-    publish: update === undefined ? null : [{ provider: 'generic', url: update.publicUrl, channel: update.channel }],
+    publish: update === undefined ? null : [{ provider: 'generic', url: update.publicUrl, channel: 'dsh1c' }],
   }
 }

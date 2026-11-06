@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process'
+import { execFile, spawnSync } from 'node:child_process'
 import { copyFile, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, delimiter, join } from 'node:path'
@@ -114,7 +114,19 @@ describe('credential launcher destination', () => {
 })
 
 // DPAPI's user-and-machine encryption is Windows-only.
-describe.skipIf(process.platform !== 'win32')('Windows upload credentials', () => {
+//
+// The checks below drive the real upload launcher through PowerShell 7 (`pwsh`), which a Windows
+// host may not have — Windows PowerShell 5.1 lives under another name and does not run this script.
+// Skipping is the honest outcome there: the assertions are about the launcher, and a missing runner
+// says nothing about it.
+const hasPowerShell7 = ((): boolean => {
+  try {
+    const probe = spawnSync('pwsh', ['-NoProfile', '-NonInteractive', '-Command', 'exit 0'], { stdio: 'ignore', timeout: 20_000 })
+    return probe.status === 0
+  }
+  catch { return false }
+})()
+describe.skipIf(process.platform !== 'win32' || !hasPowerShell7)('Windows upload credentials', () => {
   it.each(['production', 'test'])('checks %s credentials without uploading or changing the parent', async (deployment) => {
     const result = await check('valid', deployment)
     expect(result.code, result.output).toBe(0)

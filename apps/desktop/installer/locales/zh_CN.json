@@ -2,6 +2,7 @@
   "nsisLanguage": "SIMPCHINESE",
   "strings": {
     "INSTALLER_INSTALL": "立即安装",
+    "INSTALLER_UPDATE": "更新",
     "INSTALLER_FINISH": "完成",
     "INSTALLER_NATIVE_PROGRESS": "正在准备安装… %d%%",
     "INSTALLER_PROGRESS_EXTRACT": "正在解压文件… %d%%",

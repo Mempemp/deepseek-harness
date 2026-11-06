@@ -2,6 +2,7 @@
   "nsisLanguage": "ENGLISH",
   "strings": {
     "INSTALLER_INSTALL": "Install now",
+    "INSTALLER_UPDATE": "Update",
     "INSTALLER_FINISH": "Finish",
     "INSTALLER_NATIVE_PROGRESS": "Preparing installation… %d%%",
     "INSTALLER_PROGRESS_EXTRACT": "Extracting files… %d%%",

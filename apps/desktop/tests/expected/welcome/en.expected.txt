@@ -2,5 +2,6 @@ DeepSeek Harness
 DeepSeek Harness
 Welcome to DeepSeek Harness
 Build potential. Explore intelligence.
+Set up later
 Sign in
 Add API Key

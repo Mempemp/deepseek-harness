@@ -2,6 +2,7 @@
   "nsisLanguage": "JAPANESE",
   "strings": {
     "INSTALLER_INSTALL": "今すぐインストール",
+    "INSTALLER_UPDATE": "更新",
     "INSTALLER_FINISH": "完了",
     "INSTALLER_NATIVE_PROGRESS": "インストールを準備しています… %d%%",
     "INSTALLER_PROGRESS_EXTRACT": "ファイルを展開しています… %d%%",
