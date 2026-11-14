@@ -172,7 +172,7 @@ describe('catalog seeding', () => {
     const manifest = JSON.parse(readFileSync(join(seeded.profileDir, 'package.json'), 'utf8')) as {
       dsh: { profile: { bundles: string[] } }
     }
-    expect(manifest.dsh.profile.bundles).toEqual(['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-experimental-agent-team-profile', 'dsh-1c-project-properties'])
+    expect(manifest.dsh.profile.bundles).toEqual(['@deepseek-ai/dsh-base', 'dsh-1c-project-properties'])
     expect(readFileSync(seeded.pnpmLog, 'utf8')).toContain('remove dsh-rlm-tools-bsl')
   })
 
@@ -202,7 +202,7 @@ describe('catalog seeding', () => {
     const manifest = JSON.parse(readFileSync(join(second.profileDir, 'package.json'), 'utf8')) as {
       dsh: { profile: { bundles: string[]; catalogPackages: string[] } }
     }
-    expect(manifest.dsh.profile.bundles).toEqual(['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-experimental-agent-team-profile', 'dsh-1c-project-properties'])
+    expect(manifest.dsh.profile.bundles).toEqual(['@deepseek-ai/dsh-base', 'dsh-1c-project-properties'])
     expect(manifest.dsh.profile.catalogPackages).toEqual(['dsh-1c-project-properties'])
     expect(readFileSync(second.pnpmLog, 'utf8')).toContain('remove dsh-rlm-tools-bsl')
   })
@@ -259,5 +259,19 @@ describe('catalog seeding', () => {
     expect(result.detail).toContain('plugin-1.0.0.tgz')
     expect(existsSync(join(seeded.options.profileDir, CATALOG_MARKER_NAME))).toBe(false)
     expect(seeded.written.some(message => message.includes('[catalog] seeding failed'))).toBe(true)
+  })
+
+  it('turns Agent Teams on for new sessions through the profile patch', async () => {
+    // Ядро держит agent-team в штатных бандлах, но с defaultEnabled: false — без этой строки
+    // после обновления функция выглядит пропавшей. Повторный запуск не должен её дублировать.
+    const seeded = fixture({ 'manifest.json': manifestFile([]) })
+    await expect(seedShippedCatalog(seeded.options)).resolves.toEqual({ outcome: 'applied' })
+    const patchPath = join(seeded.profileDir, 'cordis.patch.yml')
+    const patch = readFileSync(patchPath, 'utf8')
+    expect(patch).toContain('- id: agent-team')
+    expect(patch).toContain("name: '@deepseek-ai/dsh-agent-team'")
+    expect(patch).toContain('defaultEnabled: true')
+    await seedShippedCatalog(seeded.options)
+    expect(readFileSync(patchPath, 'utf8').match(/id: agent-team/g)).toHaveLength(1)
   })
 })

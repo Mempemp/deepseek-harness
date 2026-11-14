@@ -140,12 +140,62 @@ function writeAtomic(path: string, contents: string): void {
   renameSync(temporary, path)
 }
 
+/** Patch id of the agent-teams row this build writes into the profile layer. */
+export const AGENT_TEAMS_PATCH_ID = 'agent-team'
+export const AGENT_TEAMS_PLUGIN = '@deepseek-ai/dsh-agent-team'
+
 /**
- * Bundle rows this build turns on for every profile. Agent Teams is the upstream coordination layer
- * its own bundle replaces direct delegation with; the application ships it, so the row resolves
- * from there and no package is installed into the profile.
+ * Keep Agent Teams on for every new session.
+ *
+ * Upstream moved the coordination layer into the stock bundles (`dsh-base` mounts `agent-team`,
+ * `dsh-web-app` mounts its panel) and retired the experimental profile bundle this build used to
+ * enable. The feature itself lost its default in that move: `defaultEnabled` is false, so a fresh
+ * profile shows plain subagents and the old behaviour looks gone. This row restores it without
+ * touching the bundle list. `maxTasks` repeats the stock value because a patch entry replaces the
+ * plugin config wholesale.
+ * @param profileDir - profile directory holding the user patch layer.
+ * @param note - receives one line about what happened.
  */
-export const ENABLED_BUNDLES: readonly string[] = ['@deepseek-ai/dsh-experimental-agent-team-profile']
+export function ensureAgentTeams(profileDir: string, note: (message: string) => void): void {
+  const path = join(profileDir, 'cordis.patch.yml')
+  let current: string | undefined
+  try {
+    current = readFileSync(path, 'utf8')
+  }
+  catch {
+    current = undefined
+  }
+  if (current !== undefined) {
+    let parsed: unknown
+    try {
+      parsed = load(current)
+    }
+    catch (error) {
+      note(`[catalog] agent teams skipped: unreadable patch layer (${error instanceof Error ? error.message : String(error)})`)
+      return
+    }
+    if (Array.isArray(parsed) && parsed.some(entry => record(entry) && entry.id === AGENT_TEAMS_PATCH_ID)) return
+    if (parsed !== undefined && parsed !== null && !Array.isArray(parsed)) return
+  }
+  const entry = [
+    `- id: ${AGENT_TEAMS_PATCH_ID}`,
+    `  name: '${AGENT_TEAMS_PLUGIN}'`,
+    '  config:',
+    '    maxTasks: 256',
+    '    defaultEnabled: true',
+    '',
+  ].join('\n')
+  const header = [
+    '# Your patch layer for this dsh profile, applied after every bundle layer:',
+    '# a top-level YAML array of loader patch entries.',
+    '',
+  ].join('\n')
+  const base = current === undefined ? header : current.endsWith('\n') ? current : `${current}\n`
+  writeAtomic(path, `${base}${entry}`)
+  note(current === undefined
+    ? '[catalog] agent teams written into a new profile patch'
+    : '[catalog] agent teams added to the profile patch')
+}
 
 /** Core plugin whose Discover tab reads a market index; the bundle ships no market plugin of its own. */
 export const MARKET_INDEX_PATCH_ID = 'plugin-market'
@@ -307,7 +357,6 @@ function reconcileProfile(
   const alive = current.filter(name => !retired.includes(name))
   const dropped = current.filter(name => retired.includes(name))
   const selected = [...alive]
-  for (const name of ENABLED_BUNDLES) if (!selected.includes(name)) selected.push(name)
   for (const name of packages) {
     const installed: unknown = manifestOf(name)
     if (!record(installed) || !record(installed.dsh) || !record(installed.dsh.bundle)) continue
@@ -511,6 +560,7 @@ export async function seedShippedCatalog(attempt: CatalogSeedOptions): Promise<C
     // profile whose patch layer was recreated or rewritten would otherwise lose the market index
     // and leave the Discover tab empty.
     ensureMarketIndex(options.profileDir, options.note)
+    ensureAgentTeams(options.profileDir, options.note)
     const fingerprint = catalogFingerprint(options.catalogDir)
     if (markedFingerprint(options.profileDir) === fingerprint) return { outcome: 'skipped' }
     const items = catalogItems(manifest)
