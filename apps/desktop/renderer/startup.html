@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<title>DSH</title>
+<style>
+  :root { color-scheme: dark light; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 18px; background: #141414; color: #e8e8e8;
+    font: 400 13px/1.4 "Segoe UI", system-ui, sans-serif;
+    -webkit-user-select: none; user-select: none;
+  }
+  @media (prefers-color-scheme: light) { body { background: #f7f7f7; color: #1c1c1c; } }
+  .title { font-size: 15px; letter-spacing: .2px; }
+  .bar { width: 168px; height: 3px; border-radius: 2px; overflow: hidden; background: currentColor; opacity: .16; }
+  .bar::after {
+    content: ""; display: block; width: 40%; height: 100%; border-radius: 2px;
+    background: currentColor; animation: slide 1.15s ease-in-out infinite;
+  }
+  .hint { opacity: .55; }
+  @keyframes slide { 0% { transform: translateX(-100%); } 100% { transform: translateX(320%); } }
+</style>
+</head>
+<body>
+  <div class="title">Запускаю…</div>
+  <div class="bar"></div>
+  <div class="hint">первый запуск ставит компоненты и занимает несколько минут</div>
+</body>
+</html>

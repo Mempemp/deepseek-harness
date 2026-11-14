@@ -3,6 +3,7 @@
   "strings": {
     "INSTALLER_UPDATE_WAIT": "Instalando la actualización. La aplicación se reiniciará automáticamente al terminar.",
     "INSTALLER_INSTALL": "Instalar ahora",
+    "INSTALLER_UPDATE": "Actualizar",
     "INSTALLER_FINISH": "Finalizar",
     "INSTALLER_NATIVE_PROGRESS": "Preparando la instalación… %d%%",
     "INSTALLER_PROGRESS_EXTRACT": "Extrayendo archivos… %d%%",

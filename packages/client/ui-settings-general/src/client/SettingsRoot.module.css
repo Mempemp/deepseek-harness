@@ -96,7 +96,10 @@
   position: relative;
   z-index: 1;
   display: grid;
-  grid-template-columns: 188px minmax(0, 1fr);
+  /* Russian tab titles ("1С: Параметры проектов", "Центр уведомлений") are longer than the
+     English/Chinese ones this rail was drawn for; 248 px leaves 172 px for the label, which
+     fits the 160-165 px of "1С: Параметры проектов" without an ellipsis. */
+  grid-template-columns: 248px minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
   grid-template-areas:
     'title header'
@@ -121,7 +124,7 @@
   outline: none;
 }
 
-/* Nav rail (figma .Setting-nav 501:29958): the 188px track's cells, pad
+/* Nav rail (figma .Setting-nav 501:29958): the 248px track's cells, pad
    (12,0), no own fill — the panel white shows through. */
 .nav {
   grid-area: nav;

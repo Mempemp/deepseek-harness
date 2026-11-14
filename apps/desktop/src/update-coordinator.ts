@@ -9,10 +9,23 @@ import type { DesktopUpdateState } from './ipc.ts'
 import { DesktopUpdateHttpExecutor } from './updates/electron-updater/http-executor.ts'
 import { DesktopUpdatePreparationError, downloadFailureDetails } from './update-error.ts'
 import type { DesktopUpdateChannel } from './update-channel.ts'
-import { selectUpdateChannel } from './updates/electron-updater/channel.ts'
 import { discardDesktopUpdate } from './updates/electron-updater/discard.ts'
 
 const { autoUpdater } = electronUpdater
+
+/**
+ * Канал фида сборки. Имя файла одинаково для всех вариантов поставки: каталог 1С, свой
+ * `dsh1c.yml` и мост `latest.yml` для сборок 0.11.x, которые иначе не увидят обновление.
+ * Номера нашей линии несут счётчик (`0.2.2-rc.3-1`) и для библиотеки выглядят prerelease,
+ * поэтому предрелизы в фиде разрешены всегда; понижение версии запрещено — сеттер канала
+ * включает его сам.
+ * @param updater - Апдейтер после того, как прошлые операции завершились.
+ */
+function applyBundleChannel(updater: AppUpdater): void {
+  updater.channel = 'dsh1c'
+  updater.allowDowngrade = false
+  updater.allowPrerelease = true
+}
 
 /** Owns one updater target until its download and installation settle. */
 export class DesktopUpdateCoordinator {
@@ -56,6 +69,7 @@ export class DesktopUpdateCoordinator {
    * @param channel - Installed package channel; omitted test/local callers retain nightly.
    * @param discard - Clears settled library targets and platform resources before another channel is used.
    * @param downloadResult - Once per completed download attempt, including platform preparation failures.
+   * @param skipped - Versions the user rolled back from, which unattended checks must not offer again.
    */
   constructor(
     private readonly publish: (state: DesktopUpdateState) => DesktopUpdateState,
@@ -66,6 +80,7 @@ export class DesktopUpdateCoordinator {
     private readonly downloadResult?: (success: boolean, reason?: string) => void,
     private channel: DesktopUpdateChannel = 'nightly',
     private readonly discard: (updater: AppUpdater) => Promise<void> = discardDesktopUpdate,
+    private readonly skipped?: (version: string) => boolean,
   ) {
     if (updater === autoUpdater) {
       // electron-updater omits this internal transport property from its public declarations.
@@ -78,7 +93,7 @@ export class DesktopUpdateCoordinator {
     }
     this.updater.autoDownload = false
     this.updater.autoInstallOnAppQuit = false
-    selectUpdateChannel(this.updater, channel)
+    applyBundleChannel(this.updater)
     this.updater.on('download-progress', this.onProgress)
     this.updater.on('update-downloaded', this.onDownloaded)
     this.updater.on('error', this.onError)
@@ -136,7 +151,7 @@ export class DesktopUpdateCoordinator {
         throw error
       }
       this.channel = channel
-      selectUpdateChannel(this.updater, channel)
+      applyBundleChannel(this.updater)
       this.configurationError = undefined
       this.setState({ phase: 'checking' })
       const result = await this.doCheck()
@@ -276,7 +291,9 @@ export class DesktopUpdateCoordinator {
       this.cancellation = result.cancellationToken
       const version = result.updateInfo.version
       if (valid(version) === null) throw new Error('desktop update: feed version is invalid')
-      this.release = result.isUpdateAvailable && gt(version, this.currentVersion())
+      // Откат пользователя запоминает версию в update-guard: автоматическая проверка
+      // не предлагает её снова, пока установлен релиз, с которого он откатился.
+      this.release = result.isUpdateAvailable && gt(version, this.currentVersion()) && !(this.skipped?.(version) ?? false)
         ? { kind: 'checked', version } : { kind: 'none' }
       return this.setState(this.candidate === undefined ? { phase: 'idle' } : { phase: 'available', version })
     } catch (error) {

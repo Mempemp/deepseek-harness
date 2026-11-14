@@ -68,6 +68,13 @@ describe('desktop core package set', () => {
     })
   })
 
+  it('accepts a desktop sub-release on top of the bundled core version', () => {
+    const { root } = packageSetProject()
+    expect(() => verifyDesktopCorePackageSet(root, '1.2.3-4')).not.toThrow()
+    expect(() => verifyDesktopCorePackageSet(root, '1.2.3-4x')).toThrow(/does not match Desktop/u)
+    expect(() => verifyDesktopCorePackageSet(root, '1.2.4-4')).toThrow(/does not match Desktop/u)
+  })
+
   it('rejects version drift, descriptor disorder, corruption, and extra files', () => {
     const { root, dsh, base, host } = packageSetProject()
     expect(() => verifyDesktopCorePackageSet(root, '2.0.0')).toThrow(/does not match Desktop/u)

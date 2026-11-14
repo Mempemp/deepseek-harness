@@ -105,7 +105,12 @@ vi.mock('electron', () => ({
 // The Windows tray relabels through Menu as well; keep the menu call counts below platform-neutral.
 vi.mock('../src/tray.ts', () => ({ DesktopTray: class { relabel() {} dispose() {} } }))
 
-vi.mock('../src/paths.ts', () => ({ resolveDesktopPaths: () => ({ profile: '/profile' }) }))
+// Partial mock: the module keeps gaining exports (the recovery paths arrived with the rollback
+// work), and a whole-module replacement silently breaks the boot it is meant to isolate.
+vi.mock('../src/paths.ts', async importOriginal => ({
+  ...await importOriginal<typeof import('../src/paths.ts')>(),
+  resolveDesktopPaths: () => ({ profile: '/profile' }),
+}))
 vi.mock('../src/settings.ts', () => ({ readDesktopSettings: () => ({ updates: { allowTestAuthPopupWindow: false } }) }))
 vi.mock('../src/login-shell-environment.ts', async importOriginal => ({
   ...await importOriginal<typeof import('../src/login-shell-environment.ts')>(),
@@ -186,7 +191,10 @@ it.each([false, true])('starts welcome onboarding without carrying update focus 
   state.hasApiKey = false
   state.operations = undefined
   state.accountState.mockResolvedValue({ status: 'signed-out', attempt: null, links: { usageUrl: '', topUpUrl: '' } })
-  if (updated) vi.stubGlobal('process', { ...process, platform: 'win32', argv: ['desktop', '--updated'] })
+  // Electron supplies resourcesPath in the real main process; vitest does not, and the first-run
+  // catalog seed joins it before the welcome decision.
+  vi.stubGlobal('process', { ...process, resourcesPath: '/resources',
+    ...(updated ? { platform: 'win32', argv: ['desktop', '--updated'] } : {}) })
   vi.useFakeTimers()
   vi.stubEnv('DSH_CLIENT_VERSION', '1.2.3')
   vi.stubEnv('DSH_DESKTOP_DEV_PROJECT_DIR', '/development-profile')

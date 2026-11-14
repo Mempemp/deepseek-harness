@@ -47,7 +47,7 @@ describe('desktop release metadata', () => {
 const coordinators: InstanceType<typeof DesktopUpdateCoordinator>[] = []
 afterEach(() => { for (const item of coordinators.splice(0)) item.dispose() })
 
-function fixture(channel: 'nightly' | 'stable' = 'nightly', version = '1.1.0-alpha.1', discard?: (updater: AppUpdater) => Promise<void>) {
+function fixture(channel: 'nightly' | 'stable' = 'nightly', version = '1.1.0-alpha.1', discard?: (updater: AppUpdater) => Promise<void>, skipped?: (version: string) => boolean) {
   const events = new EventEmitter()
   const checkForUpdates = vi.fn(async () => ({
     isUpdateAvailable: true,
@@ -66,7 +66,7 @@ function fixture(channel: 'nightly' | 'stable' = 'nightly', version = '1.1.0-alp
   const updater = Object.assign(events, { checkForUpdates, downloadUpdate, quitAndInstall }) as unknown as AppUpdater
   const coordinator = new DesktopUpdateCoordinator(
     (state) => { states.push(state); return state },
-    beforeRestart, updater, () => true, () => version, downloadResult, channel, discard,
+    beforeRestart, updater, () => true, () => version, downloadResult, channel, discard, skipped,
   )
   coordinators.push(coordinator)
   return { coordinator, updater, events, states, checkForUpdates, downloadUpdate, quitAndInstall, beforeRestart, downloadResult }
@@ -145,7 +145,7 @@ describe('desktop update coordinator', () => {
       'available', 'downloading', 'downloading', 'verifying', 'ready', 'installing',
     ])
     expect(f.updater).toMatchObject({
-      autoDownload: false, autoInstallOnAppQuit: false, channel: 'nightly',
+      autoDownload: false, autoInstallOnAppQuit: false, channel: 'dsh1c',
       allowPrerelease: true, allowDowngrade: false,
     })
   })
@@ -448,4 +448,24 @@ it('does not diagnose a filesystem cause from error wording alone', async () => 
   await f.coordinator.check()
   f.downloadUpdate.mockRejectedValueOnce(new Error('ENOSPC or EACCES in a remote response'))
   expect((await f.coordinator.download('1.1.0-rc.2')).downloadFailure).toBeUndefined()
+
+  it('keeps the 1C feed on every packaged channel and accepts our release numbering', async () => {
+  // Канал манифеста не переключает фид: файл у нас один — `dsh1c.yml`, а номера линии
+  // несут счётчик (`0.2.2-rc.3-1`) и для библиотеки выглядят prerelease.
+    for (const channel of ['nightly', 'stable'] as const) {
+      const f = fixture(channel, '1.0.0')
+      expect(f.updater.channel).toBe('dsh1c')
+      expect(f.updater.allowPrerelease).toBe(true)
+      expect(f.updater.allowDowngrade).toBe(false)
+      expect((await f.coordinator.check()).phase).toBe('available')
+    }
+  })
+
+  it('does not offer a release the user rolled back from', async () => {
+    const skipped = vi.fn((version: string) => version === '1.1.0-rc.2')
+    const f = fixture('nightly', '1.0.0', undefined, skipped)
+    expect(await f.coordinator.check()).toEqual({ phase: 'idle' })
+    expect(skipped).toHaveBeenCalledWith('1.1.0-rc.2')
+    await expect(f.coordinator.download('1.1.0-rc.2')).rejects.toThrow(/no checked update/u)
+  })
 })

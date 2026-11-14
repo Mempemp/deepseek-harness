@@ -43,9 +43,25 @@ async function probeTar(): Promise<string | undefined> {
   }
 }
 
+/**
+ * Read the 32-bit Program Files root, tolerating the case a non-Windows shell passes.
+ * A bash/MSYS launcher uppercases ambient names, and the lookup below is a plain object's, which is
+ * case-sensitive even on Windows; without this a build host that has the tools reports them absent.
+ * @param environment - Packaging environment used to locate Windows tooling.
+ * @returns The configured value, or undefined when no spelling of the name is present.
+ */
+function programFilesX86(environment: NodeJS.ProcessEnv): string | undefined {
+  const exact = environment['ProgramFiles(x86)']
+  if (exact !== undefined) return exact
+  for (const [name, value] of Object.entries(environment)) {
+    if (name.toLowerCase() === 'programfiles(x86)') return value
+  }
+  return undefined
+}
+
 async function probeWindowsInstallerToolchain(environment: NodeJS.ProcessEnv): Promise<DesktopToolchainProbeFailure[]> {
   const failures: DesktopToolchainProbeFailure[] = []
-  const programFiles = environment['ProgramFiles(x86)']
+  const programFiles = programFilesX86(environment)
   const vswhere = programFiles === undefined
     ? undefined
     : join(programFiles, 'Microsoft Visual Studio/Installer/vswhere.exe')
