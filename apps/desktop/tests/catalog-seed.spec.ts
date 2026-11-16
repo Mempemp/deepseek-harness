@@ -1,6 +1,6 @@
 /** First-run catalog seeding: what it decides, what it writes, and what it leaves alone. */
 
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -48,18 +48,31 @@ function fixture(
   const pnpm = join(root, 'pnpm.mjs')
   if (options.pnpmStub === true) {
     writeFileSync(pnpm, [
-      "import { appendFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'",
+      "import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'",
       "import { basename, join } from 'node:path'",
       'const [, , action, ...rest] = process.argv',
       "const specs = rest.filter(argument => !argument.startsWith('--'))",
       "appendFileSync(join(process.cwd(), 'pnpm.log'), action + ' ' + specs.join(' ') + '\\n')",
+      // pnpm resolves every `file:` dependency of the manifest before it applies the specs it was
+      // given: a tarball that is already gone aborts the run, even when that package is the very
+      // one being replaced. Mirroring it here is what makes an incomplete stage visible.
+      "const manifestPath = join(process.cwd(), 'package.json')",
+      "const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))",
+      'for (const value of Object.values(manifest.dependencies ?? {})) {',
+      "  if (typeof value !== 'string' || !value.startsWith('file:')) continue",
+      "  const target = value.slice('file:'.length)",
+      "  if (!existsSync(target)) { console.error('ENOENT: no such file or directory, open ' + target); process.exit(1) }",
+      '}',
+      'const dependencies = { ...(manifest.dependencies ?? {}) }',
       'for (const spec of specs) {',
       "  const name = spec.endsWith('.tgz') ? basename(spec).replace(/-\\d+\\.\\d+\\.\\d+.*$/, '') : spec",
       "  const dir = join(process.cwd(), 'node_modules', ...name.split('/'))",
-      "  if (action === 'remove') { rmSync(dir, { recursive: true, force: true }); continue }",
+      "  if (action === 'remove') { rmSync(dir, { recursive: true, force: true }); delete dependencies[name]; continue }",
       '  mkdirSync(dir, { recursive: true })',
       "  writeFileSync(join(dir, 'package.json'), JSON.stringify({ name, version: '1.0.0', dsh: { bundle: { patch: './cordis.patch.yml' } } }))",
+      "  if (spec.endsWith('.tgz')) dependencies[name] = spec.startsWith('file:') ? spec : 'file:' + spec",
       '}',
+      "writeFileSync(manifestPath, JSON.stringify({ ...manifest, dependencies }, undefined, 2) + '\\n')",
       '',
     ].join('\n'))
   }
@@ -242,6 +255,54 @@ describe('catalog seeding', () => {
     const after = readdirSync(stageRoot)
     expect(after).toHaveLength(1)
     expect(after[0]).not.toBe(before[0])
+  })
+
+  it('keeps the revision the profile installs from until the incoming one lands', async () => {
+    // An upgrade always starts with `file:` dependencies naming the previous revision. Pruning it
+    // before the package manager runs makes pnpm abort on the missing tarball, the marker stays
+    // unwritten, and the profile keeps the old plugins while the new core rejects them.
+    const plugin = (version: string): unknown => ({ kind: 'plugin', id: 'demo-plugin', version, file: `plugins/demo-plugin-${version}.tgz` })
+    const first = fixture({
+      'manifest.json': manifestFile([plugin('1.0.0')]),
+      'plugins/demo-plugin-1.0.0.tgz': 'first',
+    }, { pnpmStub: true })
+    await expect(seedShippedCatalog(first.options)).resolves.toEqual({ outcome: 'applied' })
+    const stageRoot = join(first.profileDir, '.1c-catalog')
+    const previous = readdirSync(stageRoot)
+    expect(previous).toHaveLength(1)
+    const installed = JSON.parse(readFileSync(join(first.profileDir, 'package.json'), 'utf8')) as { dependencies: Record<string, string> }
+    expect(installed.dependencies['demo-plugin']).toContain(join(previous[0] ?? '', 'plugins', 'demo-plugin-1.0.0.tgz'))
+
+    writeFileSync(join(first.catalogDir, 'manifest.json'), manifestFile([plugin('1.1.0')]))
+    writeFileSync(join(first.catalogDir, 'plugins', 'demo-plugin-1.1.0.tgz'), 'second')
+
+    await expect(seedShippedCatalog(first.options)).resolves.toEqual({ outcome: 'applied' })
+    const upgraded = JSON.parse(readFileSync(join(first.profileDir, 'package.json'), 'utf8')) as { dependencies: Record<string, string> }
+    expect(upgraded.dependencies['demo-plugin']).toContain('demo-plugin-1.1.0.tgz')
+    expect(upgraded.dependencies['demo-plugin']).not.toContain(previous[0] ?? '')
+    expect(readdirSync(stageRoot)).toHaveLength(1)
+  })
+
+  it('repoints dependencies at the staged revision when the old one is already gone', async () => {
+    // The state an earlier build leaves behind: the manifest names a revision the stage root no
+    // longer holds, so the package manager cannot resolve the manifest and every launch fails.
+    const plugin = (version: string): unknown => ({ kind: 'plugin', id: 'demo-plugin', version, file: `plugins/demo-plugin-${version}.tgz` })
+    const seeded = fixture({
+      'manifest.json': manifestFile([plugin('1.0.0')]),
+      'plugins/demo-plugin-1.0.0.tgz': 'first',
+    }, { pnpmStub: true })
+    await expect(seedShippedCatalog(seeded.options)).resolves.toEqual({ outcome: 'applied' })
+    const stageRoot = join(seeded.profileDir, '.1c-catalog')
+    const gone = readdirSync(stageRoot)
+    rmSync(join(stageRoot, gone[0] ?? ''), { recursive: true, force: true })
+
+    writeFileSync(join(seeded.catalogDir, 'manifest.json'), manifestFile([plugin('1.1.0')]))
+    writeFileSync(join(seeded.catalogDir, 'plugins', 'demo-plugin-1.1.0.tgz'), 'second')
+
+    await expect(seedShippedCatalog(seeded.options)).resolves.toEqual({ outcome: 'applied' })
+    const manifest = JSON.parse(readFileSync(join(seeded.profileDir, 'package.json'), 'utf8')) as { dependencies: Record<string, string> }
+    expect(manifest.dependencies['demo-plugin']).toContain('demo-plugin-1.1.0.tgz')
+    expect(readdirSync(stageRoot)).toHaveLength(1)
   })
 
   it('records what it did in the product log', async () => {

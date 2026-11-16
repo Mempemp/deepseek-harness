@@ -373,6 +373,37 @@ function reconcileProfile(
 }
 
 /**
+ * Staged revisions the profile still installs from, read out of its `file:` dependencies.
+ *
+ * The package manager resolves the whole manifest before it applies the specs it was given, so a
+ * `file:` dependency whose tarball is already gone aborts the run with ENOENT — even when that
+ * same package is the one being replaced. An upgrade from the previous catalog always has such
+ * rows, so the revision they point at must stay on disk until the install lands.
+ * @param profileDir - Desktop profile whose manifest is read.
+ * @returns Directory names under the stage root that a dependency refers to.
+ */
+function stagedRevisionsInUse(profileDir: string): string[] {
+  const manifestPath = join(profileDir, 'package.json')
+  if (!existsSync(manifestPath)) return []
+  try {
+    const manifest: unknown = JSON.parse(readFileSync(manifestPath, 'utf8'))
+    if (!record(manifest) || !record(manifest.dependencies)) return []
+    const pattern = new RegExp(`${CATALOG_STAGE_DIR.replace('.', '\\.')}[\\\\/]([^\\\\/]+)[\\\\/]`)
+    const names: string[] = []
+    for (const spec of Object.values(manifest.dependencies)) {
+      const value = text(spec)
+      if (value === undefined) continue
+      const name = pattern.exec(value)?.[1]
+      if (name !== undefined && !names.includes(name)) names.push(name)
+    }
+    return names
+  }
+  catch {
+    return []
+  }
+}
+
+/**
  * Copy this catalog revision into the profile and drop the revisions before it.
  * The packed catalog lives beside the application, whose directory changes with every installation
  * and update; the profile's own `file:` dependencies must keep resolving after such a change.
@@ -387,11 +418,75 @@ function stageCatalog(options: CatalogSeedOptions, fingerprint: string): string 
     mkdirSync(root, { recursive: true })
     cpSync(options.catalogDir, stagedDir, { recursive: true })
   }
+  const keep = new Set([basename(stagedDir), ...stagedRevisionsInUse(options.profileDir)])
   for (const entry of readdirSync(root)) {
-    if (entry !== basename(stagedDir)) rmSync(join(root, entry), { recursive: true, force: true })
+    if (keep.has(entry)) continue
+    rmSync(join(root, entry), { recursive: true, force: true })
   }
   options.note(`[catalog] staged ${basename(stagedDir)} in the profile`)
   return stagedDir
+}
+
+/**
+ * Point catalog-owned `file:` dependencies at the revision being staged.
+ *
+ * An upgrade starts from a manifest that names the previous revision. That directory is pruned as
+ * soon as the new revision lands, and the package manager then aborts on a tarball that is gone —
+ * so the profile keeps the old plugins while the new core refuses them. Rewriting the rows first
+ * makes the upgrade independent of what is left on disk, and heals a profile an earlier build left
+ * in exactly that state.
+ * @param profileDir - Desktop profile whose manifest is rewritten.
+ * @param stagedDir - Directory holding the revision that is about to be installed.
+ * @param items - Catalog entries naming the tarball of each plugin.
+ * @param note - Receives the number of repointed rows.
+ */
+function alignCatalogDependencies(
+  profileDir: string,
+  stagedDir: string,
+  items: readonly CatalogItem[],
+  note: (message: string) => void,
+): void {
+  const manifestPath = join(profileDir, 'package.json')
+  if (!existsSync(manifestPath)) return
+  const manifest: unknown = JSON.parse(readFileSync(manifestPath, 'utf8'))
+  if (!record(manifest) || !record(manifest.dependencies)) return
+  const dependencies: Record<string, unknown> = { ...manifest.dependencies }
+  let repointed = 0
+  for (const item of items) {
+    if (item.kind !== 'plugin') continue
+    const name = text(item.id)
+    const file = text(item.file)
+    if (name === undefined || file === undefined) continue
+    const current = dependencies[name]
+    // A registry range or a link the user set is their own row: only a path into a staged
+    // revision belongs to the catalog.
+    if (typeof current !== 'string' || !current.startsWith('file:')) continue
+    const target = `file:${join(stagedDir, file)}`
+    if (current === target) continue
+    dependencies[name] = target
+    repointed += 1
+  }
+  if (repointed === 0) return
+  writeAtomic(manifestPath, `${JSON.stringify({ ...manifest, dependencies }, undefined, 2)}\n`)
+  note(`[catalog] repointed ${String(repointed)} profile dependencies at the staged revision`)
+}
+
+/**
+ * Drop staged revisions the profile no longer installs from.
+ *
+ * Runs after the install succeeded, when every `file:` dependency has been rewritten onto the
+ * revision that was just staged. Pruning any earlier is what aborted the package manager with a
+ * missing tarball: the manifest still named the previous revision at that moment.
+ * @param profileDir - Desktop profile holding the stage root.
+ * @param keep - Directory name of the revision that stays.
+ */
+function pruneStagedRevisions(profileDir: string, keep: string): void {
+  const root = join(profileDir, CATALOG_STAGE_DIR)
+  if (!existsSync(root)) return
+  for (const entry of readdirSync(root)) {
+    if (entry === keep) continue
+    rmSync(join(root, entry), { recursive: true, force: true })
+  }
 }
 
 /** Copy one content tree into the Harness home, replacing a tree this catalog owns. */
@@ -565,6 +660,7 @@ export async function seedShippedCatalog(attempt: CatalogSeedOptions): Promise<C
     if (markedFingerprint(options.profileDir) === fingerprint) return { outcome: 'skipped' }
     const items = catalogItems(manifest)
     const stagedDir = stageCatalog(options, fingerprint)
+    alignCatalogDependencies(options.profileDir, stagedDir, items, options.note)
     const tarballs = items
       .filter(item => item.kind === 'plugin')
       .flatMap((item) => {
@@ -640,6 +736,9 @@ export async function seedShippedCatalog(attempt: CatalogSeedOptions): Promise<C
       catalog: text(manifest.version) ?? '',
       appliedAt: new Date().toISOString(),
     }, undefined, 2)}\n`)
+    // Every `file:` dependency names this revision now, so the ones kept for the install to resolve
+    // are no longer reachable.
+    pruneStagedRevisions(options.profileDir, basename(stagedDir))
     options.note(`[catalog] applied ${String(manifest.version ?? '')} (${String(items.length)} items)`)
     return { outcome: 'applied' }
   }
